@@ -122,4 +122,15 @@ def main(iterations=600, poll_interval=1.0):
 
 
 if __name__ == "__main__":
-    main()
+    # Run in a background thread so SFM stays responsive.
+    # Fallback: short bounded loop if threading is unavailable.
+    try:
+        import threading
+        _t = threading.Thread(target=main, args=(3600, 1.0))
+        _t.daemon = True
+        _t.start()
+        print("[sfm_bridge] background thread started (~60 min). SFM stays usable.")
+        print("[sfm_bridge] Submit again anytime to check status.")
+    except Exception as e:
+        print("[sfm_bridge] threading unavailable (%s), short run instead" % e)
+        main(60, 1.0)
