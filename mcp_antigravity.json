@@ -1,0 +1,8 @@
+﻿{
+  "mcpServers": {
+    "honey-filmmaker-sfm": {
+      "command": "PUT_REPO_PATH_HERE\\MCP-stdio.bat",
+      "args": []
+    }
+  }
+}

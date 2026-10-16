@@ -1,0 +1,4 @@
+# Core has zero hard deps (stdlib only). Optional extras below.
+# pip install -r requirements.txt
+# mcp>=1.0  # only if you want MCP SDK transports; server works without it
+# pytest>=8  # optional; tests also run with `python -m unittest`

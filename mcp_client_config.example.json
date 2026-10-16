@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "honey-filmmaker-sfm": {
+      "command": "python",
+      "args": ["-m", "src.server.mcp_server", "--transport", "stdio",
+               "--workdir", "D:\\Github\\HoneyFilmmaker\\workdir"],
+      "cwd": "D:\\Github\\HoneyFilmmaker",
+      "env": {}
+    }
+  }
+}

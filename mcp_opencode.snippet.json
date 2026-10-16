@@ -1,0 +1,9 @@
+{
+  "mcp": {
+    "honey-filmmaker-sfm": {
+      "type": "local",
+      "command": ["cmd", "/c", "PUT_REPO_PATH_HERE\\MCP-stdio.bat"],
+      "enabled": true
+    }
+  }
+}
