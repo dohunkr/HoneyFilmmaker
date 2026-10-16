@@ -20,6 +20,20 @@
 - SFM 내 `sfm_in_app.py`가 1초 폴링. 외부 MCP는 절대 SFM 메모리를 직접 건드리지 않음.
 - 로컬 전용, 경로 탈출 차단, 허용 명령 화이트리스트.
 
+## Script Editor 실측 (2026-10-16, 사용자 화면 캡처)
+- Script Editor는 파일 오프너가 아니라 스니펫 붙여넣기 실행기 (Script 탭 + Submit).
+- 파일 경로를 입력하면 `File "<string>", line 1` SyntaxError. 메모장에서 전체 복사→붙여넣기→Submit.
+- 무한루프/장시간 sleep은 UI 프리즈(응답 없음). v3부터 Submit 1회=큐 전체 1배치 처리로 변경.
+- `import sfm` listing 전체 확보 (CreateModel/CreateDag/CreateAnimationSet/Move/Rotate/SelectDag 등).
+- Valve 공식 패턴: `sfm.CreateModel(path)` 1인자 → `sfm.CreateAnimationSet(name, target=model)` →
+  `vs.CreateElement("DmeDag", name, shot.GetFileId())` + `dag.AddChild(model)` + `shot.scene.AddChild(dag)`
+  (출처: `game/sdktools/python/global/lib/site-packages/sfm/sfmUtils.py` CreateModelAnimationSet)
+- C++ 바인딩이라 `inspect.getargspec` 불가. 인자 개수는 과다인자 호출 시 TypeError 메시지로 역추적.
+  (`SelectDag` 정확히 1개, `Move`는 float 요구)
+- `sfm.GetCurrentShot()`이 빈 세션에서 None 반환 → 더블클릭 진입 후에도 None이면 수동 배치로 전환.
+- 수동 검증됨(커뮤니티 가이드 교차확인): 모델 배치는 Animation Set Editor [+] → Create Animation Set for New Model,
+  맵 로드는 Ctrl+L → 탭/검색 선택.
+
 ## 미검증 (별도 표시)
 - 본 세션에서 SFM을 직접 실행한 상태의 `sfm/vs/dm` 전체 API 덤프
 - Export Movie 자동화 인자, 파티클/립싱크 세밀 제어
