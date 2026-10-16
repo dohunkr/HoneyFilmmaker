@@ -46,6 +46,87 @@ def heartbeat():
         pass
 
 
+def sfm_place_model(name, asset_path, pos=None):
+    """Real placement via Valve's sfmUtils pattern. Returns dict result."""
+    try:
+        import sfm
+    except Exception:
+        return {"ok": False, "error": "no sfm module (run inside SFM)"}
+    try:
+        import vs
+    except Exception:
+        return {"ok": False, "error": "no vs module (run inside SFM)"}
+    try:
+        shot = sfm.GetCurrentShot()
+    except Exception as e:
+        return {"ok": False, "error": "GetCurrentShot failed: %s" % e}
+    if shot is None:
+        return {"ok": False, "code": "NO_CURRENT_SHOT",
+                "error": "no current shot",
+                "hint": "Double-click shot1 in the timeline, then retry"}
+    path = str(asset_path).replace("\\", "/")
+    try:
+        model = sfm.CreateModel(path)
+    except Exception as e:
+        return {"ok": False, "error": "CreateModel raised: %s" % e}
+    if model is None:
+        return {"ok": False, "error": "CreateModel returned None for %s" % path,
+                "hint": "Check the .mdl exists under game/ (use search_assets)"}
+    try:
+        animSet = sfm.CreateAnimationSet(str(name), target=model)
+    except Exception as e:
+        return {"ok": False, "error": "CreateAnimationSet raised: %s" % e,
+                "note": "model object was created"}
+    try:
+        dag = vs.CreateElement("DmeDag", str(name), shot.GetFileId())
+        dag.AddChild(model)
+        shot.scene.AddChild(dag)
+    except Exception as e:
+        return {"ok": False, "error": "dag attach raised: %s" % e,
+                "note": "model+animSet exist"}
+    moved = None
+    if pos is not None:
+        try:
+            sfm.SelectDag(dag)
+            sfm.Move(float(pos[0]), float(pos[1]), float(pos[2]))
+            moved = list(pos)
+        except Exception as e:
+            moved = "Move failed: %s (placed at origin)" % e
+    return {"ok": True, "name": name, "path": path,
+            "animSet": bool(animSet is not None), "moved": moved}
+
+
+def sfm_set_transform(name, pos=None, rot=None):
+    try:
+        import sfm
+    except Exception:
+        return {"ok": False, "error": "no sfm module (run inside SFM)"}
+    try:
+        dag = sfm.FindDag(str(name))
+    except Exception as e:
+        return {"ok": False, "error": "FindDag raised: %s" % e}
+    if dag is None:
+        return {"ok": False, "error": "dag not found: %s" % name}
+    out = {"ok": True, "name": name}
+    if pos is not None:
+        try:
+            sfm.SelectDag(dag)
+            sfm.Move(float(pos[0]), float(pos[1]), float(pos[2]))
+            out["pos"] = list(pos)
+        except Exception as e:
+            out["ok"] = False
+            out["move_error"] = str(e)
+    if rot is not None:
+        try:
+            sfm.SelectDag(dag)
+            sfm.Rotate(float(rot[0]), float(rot[1]), float(rot[2]))
+            out["rot"] = list(rot)
+        except Exception as e:
+            out["ok"] = False
+            out["rotate_error"] = str(e)
+    return out
+
+
 def handle(cmd):
     name = cmd.get("command")
     params = cmd.get("params", {})
@@ -76,6 +157,25 @@ def handle(cmd):
             return {"id": cmd.get("id"), "ok": True, "result": info}
         if name == "get_session":
             return {"id": cmd.get("id"), "ok": True, "result": info}
+        if name == "add_model":
+            r = sfm_place_model(params.get("name", "model"),
+                                params.get("asset_path", ""),
+                                params.get("pos"))
+            r["id"] = cmd.get("id")
+            r["session"] = info
+            return r
+        if name == "set_transform":
+            r = sfm_set_transform(params.get("name", ""),
+                                  params.get("pos"), params.get("rot"))
+            r["id"] = cmd.get("id")
+            r["session"] = info
+            return r
+        if name in ("create_scene", "create_camera"):
+            return {"id": cmd.get("id"), "ok": False,
+                    "error": "command '%s' has no verified SFM API" % name,
+                    "hint": "create_scene: load the map manually in SFM. "
+                            "create_camera: create the camera manually for now.",
+                    "received_params": params, "session": info}
         # Mutating commands: require manual confirmation inside SFM for safety.
         # Operator should extend these branches with validated sfm/vs/dm calls.
         return {"id": cmd.get("id"), "ok": False,
