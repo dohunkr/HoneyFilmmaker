@@ -40,8 +40,7 @@ def ensure_dirs():
 
 def heartbeat():
     try:
-        with open(HEARTBEAT, "w") as f:
-            json.dump({"ts": time.time(), "have_sfm": HAVE_SFM}, f)
+        atomic_write(HEARTBEAT, {"ts": time.time(), "have_sfm": HAVE_SFM})
     except Exception:
         pass
 
@@ -147,10 +146,9 @@ def handle(cmd):
             session = None
         info = {"session_open": bool(session)}
         try:
-            with open(SESSION, "w") as f:
-                json.dump({"connected": True, "have_sfm": True,
-                           "session_open": bool(session), "ts": time.time(),
-                           "last_command": name, "last_params": params}, f)
+            atomic_write(SESSION, {"connected": True, "have_sfm": True,
+                                   "session_open": bool(session), "ts": time.time(),
+                                   "last_command": name, "last_params": params})
         except Exception:
             pass
         if name == "ping":
@@ -188,49 +186,58 @@ def handle(cmd):
                 "error": traceback.format_exc(limit=3)}
 
 
-def main(iterations=600, poll_interval=1.0):
-    """Bounded poll loop: SFM Script Editor runs snippets synchronously,
-    so an infinite loop would never return control. Default = ~10 minutes,
-    then press Submit again to keep the bridge alive."""
-    ensure_dirs()
-    print("[sfm_bridge] polling %s (HAVE_SFM=%s, %d iters)" % (INBOX, HAVE_SFM, iterations))
-    for _ in range(max(1, int(iterations))):
-        heartbeat()
+def atomic_write(path, data):
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f)
         try:
-            names = sorted(os.listdir(INBOX))
+            if os.path.exists(path):
+                os.remove(path)
         except Exception:
-            names = []
-        for n in names:
-            if not n.endswith(".json"):
-                continue
-            p = os.path.join(INBOX, n)
-            try:
-                with open(p, "r") as f:
-                    cmd = json.load(f)
-            except Exception:
-                continue
-            res = handle(cmd)
-            res["finished_at"] = time.time()
-            try:
-                with open(os.path.join(OUTBOX, n), "w") as f:
-                    json.dump(res, f, indent=2)
-                os.remove(p)
-            except Exception:
-                pass
-        time.sleep(poll_interval)
-    print("[sfm_bridge] done. Press Submit again to keep polling.")
+            pass
+        os.rename(tmp, path)
+    except Exception:
+        pass
+
+
+def poll_once():
+    """Process the whole queue once and return. No loops, no threads,
+    no sleeps: SFM Script Editor runs snippets synchronously, so this
+    returns control in seconds. Submit again for the next batch."""
+    ensure_dirs()
+    heartbeat()
+    done, failed = 0, 0
+    try:
+        names = sorted(os.listdir(INBOX))
+    except Exception:
+        names = []
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        p = os.path.join(INBOX, n)
+        try:
+            with open(p, "r") as f:
+                cmd = json.load(f)
+        except Exception:
+            continue
+        res = handle(cmd)
+        res["finished_at"] = time.time()
+        try:
+            atomic_write(os.path.join(OUTBOX, n), res)
+            os.remove(p)
+            if res.get("ok"):
+                done += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+    heartbeat()
+    print("[sfm_bridge] batch done: %d ok, %d failed. Submit again for next batch." % (done, failed))
+    return done, failed
 
 
 if __name__ == "__main__":
-    # Run in a background thread so SFM stays responsive.
-    # Fallback: short bounded loop if threading is unavailable.
-    try:
-        import threading
-        _t = threading.Thread(target=main, args=(3600, 1.0))
-        _t.daemon = True
-        _t.start()
-        print("[sfm_bridge] background thread started (~60 min). SFM stays usable.")
-        print("[sfm_bridge] Submit again anytime to check status.")
-    except Exception as e:
-        print("[sfm_bridge] threading unavailable (%s), short run instead" % e)
-        main(60, 1.0)
+    # Single batch per Submit: processes the whole queue in seconds,
+    # then returns control. No loops, no threads, no sleeps.
+    poll_once()
