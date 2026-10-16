@@ -1,4 +1,5 @@
-# SFM in-app bridge poller — Python 2.7 compatible (SFM embedded interpreter).
+# -*- coding: utf-8 -*-
+# SFM in-app bridge poller - Python 2.7 compatible (SFM embedded interpreter).
 # Install: In SFM, open Script Editor -> Open this file -> Run.
 # It polls <workdir>/bridge_queue/inbox/*.json every 1s and writes results
 # to <workdir>/bridge_queue/outbox/<id>.json + heartbeat.json.
@@ -87,10 +88,13 @@ def handle(cmd):
                 "error": traceback.format_exc(limit=3)}
 
 
-def main(poll_interval=1.0):
+def main(iterations=600, poll_interval=1.0):
+    """Bounded poll loop: SFM Script Editor runs snippets synchronously,
+    so an infinite loop would never return control. Default = ~10 minutes,
+    then press Submit again to keep the bridge alive."""
     ensure_dirs()
-    print("[sfm_bridge] polling %s (HAVE_SFM=%s)" % (INBOX, HAVE_SFM))
-    while True:
+    print("[sfm_bridge] polling %s (HAVE_SFM=%s, %d iters)" % (INBOX, HAVE_SFM, iterations))
+    for _ in range(max(1, int(iterations))):
         heartbeat()
         try:
             names = sorted(os.listdir(INBOX))
@@ -114,6 +118,7 @@ def main(poll_interval=1.0):
             except Exception:
                 pass
         time.sleep(poll_interval)
+    print("[sfm_bridge] done. Press Submit again to keep polling.")
 
 
 if __name__ == "__main__":

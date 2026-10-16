@@ -49,6 +49,15 @@ def synth_sfx_wav(out_path: Path, kind: str = "explosion",
             v = (random.random() * 2 - 1) * env * env
         elif kind == "gunshot":
             v = (random.random() * 2 - 1) * env if i < n // 8 else 0.0
+        elif kind == "rain":
+            # soft loopable noise bed (no decay): lowpassed random
+            v = (random.random() * 2 - 1) * 0.18
+        elif kind == "wind":
+            # slow swell: noise * low-freq LFO
+            v = (random.random() * 2 - 1) * 0.25 * (0.5 + 0.5 * math.sin(2 * math.pi * 0.2 * t))
+        elif kind == "sword":
+            # metallic clash: detuned high sines, fast decay
+            v = (math.sin(2 * math.pi * 1567 * t) + math.sin(2 * math.pi * 2093 * t)) * 0.3 * env * env
         else:  # beep / whoosh fallback
             v = math.sin(2 * math.pi * 440 * t) * 0.4 * env
         frames.append(int(max(-1.0, min(1.0, v)) * 32767))
