@@ -313,24 +313,26 @@ def _console_cmds():
         from PySide import QtGui
     except Exception as e:
         return {"error": "no QtGui: %s" % e}
+    # sfmApp.ExecuteGameCommand runs a console command in SFM.
+    for cmd in ["fs_searchpaths", "cl_showfps", "fs_print_searchpaths"]:
+        try:
+            r = sfmApp.ExecuteGameCommand(cmd)
+            out["cmd_" + cmd] = str(r)[:400]
+        except Exception as e:
+            out["cmd_" + cmd] = "ERR " + str(e)[:120]
+    # Try to find the console text widget and read its contents.
     try:
-        console = sfmApp.GetMainWindow()
+        app = QtGui.QApplication.instance()
+        found = []
+        for w in app.topLevelWidgets():
+            cn = w.metaObject().className()
+            for child in w.findChildren(QtGui.QTextEdit):
+                found.append({"widget": cn, "text": str(child.toPlainText())[-1500:]})
+            for child in w.findChildren(QtGui.QPlainTextEdit):
+                found.append({"widget": cn, "text": str(child.toPlainText())[-1500:]})
+        out["console_texts"] = found
     except Exception as e:
-        return {"error": "GetMainWindow: %s" % e}
-    if console is None:
-        return {"error": "no main window"}
-    try:
-        for w in QtGui.QApplication.instance().topLevelWidgets():
-            name = w.metaObject().className()
-            if "Console" in name:
-                for child in w.findChildren(QtGui.QTextEdit):
-                    child.append("fs_searchpaths\n")
-                for child in w.findChildren(QtGui.QPlainTextEdit):
-                    child.appendPlainText("fs_searchpaths\n")
-                out["console_widget"] = name
-                break
-    except Exception as e:
-        out["error"] = str(e)[:200]
+        out["console_read_error"] = str(e)[:200]
     try:
         out["search_paths_attr"] = str(vs.GetSearchPaths()) if hasattr(vs, "GetSearchPaths") else "n/a"
     except Exception as e:

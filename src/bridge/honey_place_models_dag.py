@@ -149,46 +149,66 @@ def place(name, model_path, pos):
     for c in candidates():
         if c not in ordered:
             ordered.append(c)
+
+    tried = []
     model = None
     used = None
-    tried = []
-    for c in ordered:
+
+    def _try_create(path):
         try:
-            m = sfm.CreateModel(c)
+            m = sfm.CreateModel(path)
         except Exception as e:
-            tried.append("%s -> ERR %s" % (c, str(e)[:60]))
-            continue
-        tried.append("%s -> %s" % (c, "OK" if m is not None else "None"))
+            tried.append("%s -> ERR %s" % (path, str(e)[:70]))
+            return None
+        tried.append("%s -> %s" % (path, "OK" if m is not None else "None"))
+        return m
+
+    # Pass 1: plain
+    for c in ordered:
+        m = _try_create(c)
         if m is not None:
             model = m
             used = c
             break
+
+    # Pass 2: sfm docs say CreateModel may need an animation-set context.
+    # "UsingAnimationSet: Specify an animation set to be assumed for commands
+    #  in which an animation set is not explicitly specified."
     if model is None:
-        # CreateModel may require an animation-set context. Try assuming one
-        # (sfm.UsingAnimationSet) and re-test the most likely path.
-        tried2 = []
+        animset_try = None
         try:
             cur = sfm.GetCurrentAnimationSet()
-            tried2.append("current animset: %s" % ("None" if cur is None
-                                                   else str(cur.GetName())))
+            if cur is not None:
+                animset_try = cur
+                tried.append("current animset present: %s" % str(cur.GetName()))
         except Exception as e:
-            tried2.append("GetCurrentAnimationSet: %s" % str(e)[:60])
-        for pth in [model_path] + candidates()[:6]:
-            if not pth:
-                continue
+            tried.append("GetCurrentAnimationSet ERR %s" % str(e)[:60])
+        if animset_try is None:
+            # Build one from the shot's first existing animation set, or make
+            # an empty one via CreateAnimationSet with no target.
             try:
-                m = sfm.CreateModel(pth)
+                sets = shot.animationSets
+                if sets and len(sets) > 0:
+                    animset_try = sets[0]
+                    tried.append("using shot.animationSets[0]: %s"
+                                 % str(animset_try.GetName()))
             except Exception as e:
-                tried2.append("%s -> ERR %s" % (pth, str(e)[:60]))
-                continue
-            tried2.append("%s -> %s" % (pth, "OK" if m is not None else "None"))
-            if m is not None:
-                model = m
-                used = pth
-                break
-        if model is None:
-            return {"ok": False, "error": "CreateModel failed",
-                    "tried": tried[:20], "tried2": tried2}
+                tried.append("shot.animationSets ERR %s" % str(e)[:60])
+        if animset_try is not None:
+            try:
+                sfm.UsingAnimationSet(animset_try)
+                tried.append("UsingAnimationSet applied")
+            except Exception as e:
+                tried.append("UsingAnimationSet ERR %s" % str(e)[:70])
+            for c in ordered:
+                m = _try_create(c)
+                if m is not None:
+                    model = m
+                    used = c
+                    break
+
+    if model is None:
+        return {"ok": False, "error": "CreateModel failed", "tried": tried[:24]}
     animset = None
     try:
         animset = sfm.CreateAnimationSet(str(name), target=model)
@@ -209,7 +229,7 @@ def place(name, model_path, pos):
         except Exception:
             moved = "Move failed"
     return {"ok": True, "name": name, "path": used, "shot": how,
-            "animset": animset is not None, "moved": moved, "tried": tried[:8]}
+            "animset": animset is not None, "moved": moved, "tried": tried[:10]}
 
 
 def save():
