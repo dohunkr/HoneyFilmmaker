@@ -58,6 +58,9 @@ _last_doc_state = None
 _poll_timer = None
 _autosave_timer = None
 
+# Rate limit for menu triggering.
+_last_trigger = 0
+
 
 def log(msg):
     try:
@@ -314,36 +317,64 @@ def diagnose():
         rep["timeline_mode"] = str(sfmApp.GetTimelineMode())
     except Exception:
         pass
-    # real model load test
-    tries = []
-    model = None
-    used = None
-    for c in path_candidates():
+    # Docstrings reveal the required context and return contract.
+    docs = {}
+    for fn in ["CreateModel", "CreateAnimationSet", "GetCurrentAnimationSet",
+               "GetCurrentShot", "CreateDag", "UsingAnimationSet"]:
         try:
-            m = sfm.CreateModel(c)
+            f = getattr(sfm, fn)
+            docs[fn] = str(f.__doc__)[:600]
         except Exception as e:
-            tries.append("%s -> ERR %s" % (c, str(e)[:70]))
-            continue
-        tries.append("%s -> %s" % (c, "OK" if m is not None else "None"))
-        if m is not None:
-            model = m
-            used = c
-            break
-    rep["create_model_tried"] = tries
-    rep["create_model_winner"] = used
-    if model is not None and shot is not None:
-        try:
-            a = sfm.CreateAnimationSet("DIAG_PROBE", target=model)
-            rep["animset"] = a is not None
-            d = vs.CreateElement("DmeDag", "DIAG_PROBE", shot.GetFileId())
-            d.AddChild(model)
-            shot.scene.AddChild(d)
-            rep["attached"] = True
-        except Exception as e:
-            rep["attach_error"] = str(e)[:150]
+            docs[fn] = "ERR " + str(e)[:80]
+    rep["sfm_docs"] = docs
+    try:
+        a = sfm.GetCurrentAnimationSet()
+        rep["current_animset"] = None if a is None else str(a.GetName())
+    except Exception as e:
+        rep["current_animset_error"] = str(e)[:120]
+    # Scripts menu inventory: this is how the dag/animset context is reached.
+    try:
+        menu = sfmApp.GetScriptsMenu()
+        items = []
+        if menu is not None:
+            for act in menu.actions():
+                items.append(str(act.text()))
+        rep["scripts_menu"] = items
+    except Exception as e:
+        rep["scripts_menu_error"] = str(e)[:120]
     atomic_write(DIAG, rep)
     log("diagnose written")
     return rep
+
+
+def trigger_scripts_menu(target="honey_place_models"):
+    """Trigger a script from the Scripts menu so it runs in the real SFM
+    context (mainmenu / dag / animset). Valve's own examples drive SFM this
+    way by triggering a QMenu action."""
+    if not HAVE_QT:
+        return {"ok": False, "error": "no PySide"}
+    try:
+        from PySide import QtGui
+    except Exception as e:
+        return {"ok": False, "error": "no QtGui: %s" % e}
+    try:
+        menu = sfmApp.GetScriptsMenu()
+    except Exception as e:
+        return {"ok": False, "error": "GetScriptsMenu: %s" % e}
+    if menu is None:
+        return {"ok": False, "error": "no scripts menu"}
+    found = []
+    for act in menu.actions():
+        t = str(act.text())
+        found.append(t)
+        if t.strip() == target:
+            try:
+                act.trigger()
+                return {"ok": True, "triggered": t}
+            except Exception as e:
+                return {"ok": False, "error": "trigger failed: %s" % e}
+    return {"ok": False, "error": "script not found in Scripts menu",
+            "available": found}
 
 
 def handle(cmd):
@@ -370,8 +401,12 @@ def handle(cmd):
         r = diagnose()
         r["ok"] = True
         return r
-    if name == "save":
-        return save_session()
+        if name == "save":
+            return save_session()
+        if name == "trigger_script":
+            r = trigger_scripts_menu(params.get("target", "honey_place_models"))
+            r["id"] = cmd.get("id")
+            return r
     if name == "create_scene":
         return {"ok": False, "code": "NO_API",
                 "error": "create_scene has no verified SFM API",
@@ -525,6 +560,43 @@ def _tick():
         poll_once()
     except Exception:
         pass
+    try:
+        _auto_trigger_pending()
+    except Exception:
+        pass
+
+
+def _auto_trigger_pending():
+    """When model-placement commands are queued, run the placer script through
+    the Scripts menu so it executes in a real SFM context. This is the only
+    way CreateModel works, so it is automated here instead of asking the
+    operator to right-click."""
+    try:
+        names = [n for n in os.listdir(INBOX) if n.endswith(".json")]
+    except Exception:
+        return
+    if not names:
+        return
+    # only trigger when a placement command is waiting
+    wants = False
+    for n in names:
+        try:
+            with open(os.path.join(INBOX, n), "r") as f:
+                c = json.load(f)
+            if c.get("command") in ("add_model", "set_transform"):
+                wants = True
+                break
+        except Exception:
+            continue
+    if not wants:
+        return
+    global _last_trigger
+    now = time.time()
+    if now - _last_trigger < 5:
+        return
+    _last_trigger = now
+    r = trigger_scripts_menu("honey_place_models")
+    log("auto trigger: %s" % r.get("ok", r.get("error")))
 
 
 def _autosave_tick():
