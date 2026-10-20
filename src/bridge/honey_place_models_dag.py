@@ -1,0 +1,220 @@
+# -*- coding: utf-8 -*-
+# HoneyFilmmaker model placer.
+# INSTALL AS: game/usermod/scripts/sfm/dag/exact/count1/honey_place_models.py
+#
+# This file is executed from the DAG right-click menu (exact 1 node selected).
+# That context is required: SFM's CreateModel only returns a model when the
+# script runs in the dag/animset context. In the global sfm_init.py context
+# and in the Script Editor it always returns None.
+#
+# It reads the HoneyFilmmaker command queue and places any pending models.
+
+import os
+import json
+import time
+import traceback
+
+try:
+    import sfm
+    HAVE_SFM = True
+except Exception:
+    HAVE_SFM = False
+
+try:
+    import vs
+    HAVE_VS = True
+except Exception:
+    HAVE_VS = False
+
+try:
+    import sfmApp
+    HAVE_APP = True
+except Exception:
+    HAVE_APP = False
+
+WORKDIR = os.environ.get("HONEY_WORKDIR", r"D:\Github\HoneyFilmmaker\workdir")
+QUEUE = os.path.join(WORKDIR, "bridge_queue")
+INBOX = os.path.join(QUEUE, "inbox")
+OUTBOX = os.path.join(QUEUE, "outbox")
+HEARTBEAT = os.path.join(QUEUE, "heartbeat.json")
+
+GD = "D:/SteamLibrary/steamapps/common/SourceFilmmaker/game"
+
+
+def log(m):
+    try:
+        print "[honey/dag] %s" % m
+    except Exception:
+        pass
+
+
+def atomic_write(path, data):
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+        os.rename(tmp, path)
+    except Exception:
+        pass
+
+
+def candidates():
+    rels = ["models/player/hwm/scout.mdl", "models/player/hwm/soldier.mdl",
+            "models/player/hwm/spy.mdl",
+            "models/bots/soldier_boss/bot_soldier_boss.mdl",
+            "models/bots/soldier/bot_soldier.mdl",
+            "models/props_c17/oildrum001.mdl"]
+    out = []
+    for r in rels:
+        out.append(r)
+        out.append("tf/" + r)
+        out.append(GD + "/" + r)
+        out.append(GD + "/tf/" + r)
+    seen = set()
+    res = []
+    for c in out:
+        if c not in seen:
+            seen.add(c)
+            res.append(c)
+    return res
+
+
+def find_shot():
+    if HAVE_SFM:
+        try:
+            s = sfm.GetCurrentShot()
+            if s is not None:
+                return s, "GetCurrentShot"
+        except Exception:
+            pass
+    if HAVE_APP:
+        try:
+            s = sfmApp.GetShotAtCurrentTime()
+            if s is not None:
+                return s, "GetShotAtCurrentTime"
+        except Exception:
+            pass
+        try:
+            shots = sfmApp.GetShots()
+            if shots:
+                return shots[0], "GetShots[0]"
+        except Exception:
+            pass
+    return None, "none"
+
+
+def place(name, model_path, pos):
+    shot, how = find_shot()
+    if shot is None:
+        return {"ok": False, "code": "NO_SHOT", "error": "no shot (%s)" % how}
+    ordered = []
+    if model_path:
+        ordered.append(model_path)
+    for c in candidates():
+        if c not in ordered:
+            ordered.append(c)
+    model = None
+    used = None
+    tried = []
+    for c in ordered:
+        try:
+            m = sfm.CreateModel(c)
+        except Exception as e:
+            tried.append("%s -> ERR %s" % (c, str(e)[:60]))
+            continue
+        tried.append("%s -> %s" % (c, "OK" if m is not None else "None"))
+        if m is not None:
+            model = m
+            used = c
+            break
+    if model is None:
+        return {"ok": False, "error": "CreateModel failed", "tried": tried[:20]}
+    animset = None
+    try:
+        animset = sfm.CreateAnimationSet(str(name), target=model)
+    except Exception as e:
+        return {"ok": False, "error": "CreateAnimationSet: %s" % e, "path_used": used}
+    try:
+        dag = vs.CreateElement("DmeDag", str(name), shot.GetFileId())
+        dag.AddChild(model)
+        shot.scene.AddChild(dag)
+    except Exception as e:
+        return {"ok": False, "error": "dag attach: %s" % e, "path_used": used}
+    moved = None
+    if pos is not None:
+        try:
+            sfm.SelectDag(dag)
+            sfm.Move(float(pos[0]), float(pos[1]), float(pos[2]))
+            moved = [float(pos[0]), float(pos[1]), float(pos[2])]
+        except Exception as e:
+            moved = "Move failed: %s" % e
+    return {"ok": True, "name": name, "path": used, "shot": how,
+            "animset": animset is not None, "moved": moved, "tried": tried[:8]}
+
+
+def main():
+    for d in (QUEUE, INBOX, OUTBOX):
+        if not os.path.isdir(d):
+            try:
+                os.makedirs(d)
+            except Exception:
+                pass
+    atomic_write(HEARTBEAT, {"ts": time.time(), "ctx": "dag",
+                              "have_sfm": HAVE_SFM, "have_vs": HAVE_VS,
+                              "have_app": HAVE_APP, "pid": os.getpid()})
+    try:
+        names = sorted(os.listdir(INBOX))
+    except Exception:
+        names = []
+    done = 0
+    failed = 0
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        p = os.path.join(INBOX, n)
+        try:
+            with open(p, "r") as f:
+                cmd = json.load(f)
+        except Exception:
+            continue
+        cname = cmd.get("command")
+        params = cmd.get("params", {})
+        if cname == "add_model":
+            try:
+                res = place(params.get("name", "model"),
+                            params.get("asset_path", ""),
+                            params.get("pos"))
+            except Exception:
+                res = {"ok": False, "error": traceback.format_exc(limit=3)}
+        elif cname == "ping":
+            res = {"ok": True, "result": {"ctx": "dag"}}
+        elif cname == "diagnose":
+            shot, how = find_shot()
+            res = {"ok": True, "ctx": "dag", "shot_source": how,
+                   "shot_name": None if shot is None else str(shot.GetName()),
+                   "model_fns": [x for x in dir(sfm) if "odel" in x]}
+        else:
+            res = {"ok": False, "error": "unsupported in dag ctx: %s" % cname}
+        res["id"] = cmd.get("id")
+        res["finished_at"] = time.time()
+        try:
+            atomic_write(os.path.join(OUTBOX, n), res)
+            os.remove(p)
+            if res.get("ok"):
+                done += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+    log("dag ctx batch: %d ok, %d failed" % (done, failed))
+
+
+try:
+    main()
+except Exception:
+    log("error: %s" % traceback.format_exc(limit=3))
