@@ -63,19 +63,38 @@ def atomic_write(path, data):
 
 
 def candidates():
-    """Model paths to try. The virtual path depends on which game folder is
-    mounted, so several forms are tried."""
-    rels = ["models/player/hwm/scout.mdl", "models/player/hwm/soldier.mdl",
-            "models/player/hwm/spy.mdl",
-            "models/bots/soldier_boss/bot_soldier_boss.mdl",
+    """Model paths to try.
+
+    Ground truth from the SFM console log (material errors show the real
+    virtual paths SFM resolves):
+        models/player/spy/spy_hands_red
+        models/player/engineer/engineer_handr_red
+        models/player/demo/demoman_hands
+    So the virtual path is models/<dir>/<file>.mdl, NOT models/player/<file>.mdl.
+
+    Also important: a model only loads when its animation set exists next to
+    it (scout.mdl + scout_animations.mdl). The hwm/ variants have no animation
+    set and therefore fail to load.
+    """
+    rels = ["models/player/scout/scout.mdl", "models/player/soldier/soldier.mdl",
+            "models/player/spy/spy.mdl", "models/player/medic/medic.mdl",
+            "models/player/heavy/heavy.mdl", "models/player/demo/demo.mdl",
+            "models/player/engineer/engineer.mdl", "models/player/pyro/pyro.mdl",
+            "models/player/sniper/sniper.mdl",
             "models/bots/soldier/bot_soldier.mdl",
-            "models/props_c17/oildrum001.mdl"]
+            "models/bots/soldier_boss/bot_soldier_boss.mdl",
+            "models/props_2fort/oildrum.mdl"]
     out = []
     for r in rels:
         out.append(r)
         out.append("tf/" + r)
-        out.append(GD + "/" + r)
         out.append(GD + "/tf/" + r)
+        out.append(GD + "/" + r)
+    # HWM variants as a last resort (they lack animation sets, but the
+    # model itself may still load in some builds)
+    for r in ["models/player/hwm/scout.mdl", "models/player/hwm/soldier.mdl",
+              "models/player/hwm/spy.mdl"]:
+        out.append(r)
     seen = set()
     res = []
     for c in out:
