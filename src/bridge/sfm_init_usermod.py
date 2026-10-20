@@ -422,6 +422,7 @@ def trigger_scripts_menu(target="honey_place_models"):
         return {"ok": False, "error": "no scripts menu"}
     found = []
     want = str(target).replace("_", " ").strip().lower()
+    fallback = None
     for act in menu.actions():
         t = str(act.text())
         found.append(t)
@@ -438,6 +439,21 @@ def trigger_scripts_menu(target="honey_place_models"):
                 return {"ok": True, "triggered": t}
             except Exception as e:
                 return {"ok": False, "error": "trigger failed: %s" % e}
+        # remember any honey script as a fallback
+        if fallback is None and "honey" in norm:
+            fallback = act
+    if fallback is not None:
+        try:
+            fallback.trigger()
+            try:
+                with open(os.path.join(QUEUE, "last_trigger.txt"), "w") as f:
+                    f.write("FALLBACK -> %s @ %s\n" % (str(fallback.text()),
+                                                      time.strftime("%H:%M:%S")))
+            except Exception:
+                pass
+            return {"ok": True, "triggered": str(fallback.text()), "fallback": True}
+        except Exception as e:
+            return {"ok": False, "error": "fallback trigger failed: %s" % e}
     try:
         with open(os.path.join(QUEUE, "last_trigger.txt"), "w") as f:
             f.write("NOT FOUND target=%s menu=%s @ %s\n"
