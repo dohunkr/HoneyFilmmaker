@@ -102,6 +102,68 @@ def sfm_model_path_candidates(asset_path):
     return out
 
 
+def sfm_diagnose():
+    """Collect everything the MCP side needs to debug SFM access.
+    Written to a file so the operator only has to press Submit once."""
+    import traceback
+    rep = {"ts": time.time(), "have_sfm": HAVE_SFM}
+    try:
+        import sfm
+        rep["sfm_model_fns"] = [x for x in dir(sfm)
+                                if "odel" in x or "List" in x or "Path" in x]
+        rep["sfm_fns_all"] = [x for x in dir(sfm) if not x.startswith("_")]
+    except Exception:
+        rep["sfm_import_error"] = traceback.format_exc(limit=2)
+    try:
+        import sfmApp
+        rep["sfmApp_fns"] = [x for x in dir(sfmApp) if not x.startswith("_")]
+        try:
+            rep["has_document"] = bool(sfmApp.HasDocument())
+        except Exception:
+            rep["has_document"] = None
+        try:
+            shots = sfmApp.GetShots()
+            rep["shots"] = [str(getattr(s, "name", "?")) for s in shots]
+        except Exception:
+            rep["shots_error"] = traceback.format_exc(limit=2)
+    except Exception:
+        rep["sfmApp_import_error"] = traceback.format_exc(limit=2)
+    # model load attempts
+    tries = []
+    paths = [
+        "models/player/scout.mdl", "tf/models/player/scout.mdl",
+        "models/player/soldier.mdl",
+        "models/bots/soldier/bot_soldier.mdl",
+        "models/player/hwm/scout.mdl",
+    ]
+    for gd in [r"D:\SteamLibrary\steamapps\common\SourceFilmmaker\game",
+               r"D:\SteamLibrary\steamapps\common\SourceFilmmaker\game\tf"]:
+        for p in ["models/player/scout.mdl", "player/scout.mdl", "scout.mdl"]:
+            paths.append(gd.replace("\\", "/") + "/" + p)
+    try:
+        import sfm
+        for p in paths:
+            try:
+                m = sfm.CreateModel(p)
+                tries.append({"path": p, "result": "OK" if m is not None else "None"})
+                if m is not None:
+                    break
+            except Exception as e:
+                tries.append({"path": p, "error": str(e)[:120]})
+    except Exception:
+        pass
+    rep["create_model_tries"] = tries
+    out = os.path.join(QUEUE, "diagnose.json")
+    try:
+        with open(out, "w") as f:
+            json.dump(rep, f, indent=2)
+        rep["written"] = out
+    except Exception:
+        rep["write_error"] = traceback.format_exc(limit=2)
+    print("[sfm_bridge] diagnose written to %s" % out)
+    return rep
+
+
 def sfm_place_model(name, asset_path, pos=None, shot_name=None):
     """Real placement via Valve's sfmUtils pattern. Returns dict result."""
     try:
@@ -229,6 +291,11 @@ def handle(cmd):
                                 params.get("shot"))
             r["id"] = cmd.get("id")
             r["session"] = info
+            return r
+        if name == "diagnose":
+            r = sfm_diagnose()
+            r["id"] = cmd.get("id")
+            r["ok"] = True
             return r
         if name == "set_transform":
             r = sfm_set_transform(params.get("name", ""),

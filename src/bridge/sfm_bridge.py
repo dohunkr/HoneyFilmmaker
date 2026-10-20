@@ -58,7 +58,7 @@ class BridgePaths:
 ALLOWED_COMMANDS = {
     "ping", "get_session", "create_scene", "add_model",
     "set_transform", "list_objects", "create_camera",
-    "set_keyframe", "render_shot",
+    "set_keyframe", "render_shot", "diagnose",
 }
 
 
