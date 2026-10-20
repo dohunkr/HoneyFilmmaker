@@ -47,7 +47,8 @@ def heartbeat():
 
 def sfm_find_shot(name=None):
     """Get a shot without relying on UI selection.
-    Order: sfm.GetCurrentShot() -> sfmApp.GetShots()[0] -> sfmApp.GetShots()[name]."""
+    Order: sfm.GetCurrentShot() -> sfmApp.GetShots()[0] -> sfmApp.GetShots()[name].
+    Also try sfmApp.GetShotAtCurrentTime() (verified API) as a third source."""
     shot = None
     try:
         import sfm
@@ -60,6 +61,13 @@ def sfm_find_shot(name=None):
         import sfmApp
         if not sfmApp.HasDocument():
             return None, "no document open"
+        # current-time shot first (what the UI timeline points at)
+        try:
+            s = sfmApp.GetShotAtCurrentTime()
+            if s is not None:
+                return s, "sfmApp.GetShotAtCurrentTime"
+        except Exception:
+            pass
         shots = sfmApp.GetShots()
     except Exception as e:
         return None, "sfmApp.GetShots failed: %s" % e
@@ -68,11 +76,30 @@ def sfm_find_shot(name=None):
     if name:
         for s in shots:
             try:
-                if str(s.name) == str(name):
+                if str(s.GetName()) == str(name):
                     return s, "sfmApp.GetShots[name=%s]" % name
             except Exception:
                 continue
     return shots[0], "sfmApp.GetShots[0]"
+
+
+def sfm_current_shot_name():
+    """Ask SFM which shot the UI points at, and make it current if possible."""
+    info = {}
+    try:
+        import sfm
+        cur = sfm.GetCurrentShot()
+        info["GetCurrentShot"] = None if cur is None else str(cur.GetName())
+    except Exception as e:
+        info["GetCurrentShot_error"] = str(e)[:120]
+    try:
+        import sfmApp
+        s = sfmApp.GetShotAtCurrentTime()
+        info["GetShotAtCurrentTime"] = None if s is None else str(s.GetName())
+        info["timeline_mode"] = str(sfmApp.GetTimelineMode())
+    except Exception as e:
+        info["GetShotAtCurrentTime_error"] = str(e)[:120]
+    return info
 
 
 def sfm_model_path_candidates(asset_path):
@@ -171,12 +198,17 @@ def sfm_probe_paths():
     """Try many path forms x arity 1..2, write results to disk.
     Only string args are used, so the native binding cannot crash on arity."""
     import traceback
-    res = {"tries": [], "winner": None}
+    res = {"tries": [], "winner": None, "ctx": {}}
     out = os.path.join(QUEUE, "probe_paths.json")
     try:
         import sfm
     except Exception:
         return {"ok": False, "error": "no sfm module"}
+    res["ctx"]["shot_state"] = sfm_current_shot_name()
+    # 1) does the CURRENT shot matter? try with a shot we can obtain
+    shot, how = sfm_find_shot()
+    res["ctx"]["shot_source"] = how
+    res["ctx"]["shot_name"] = None if shot is None else str(shot.GetName())
     cands = sfm_path_candidates_all()
     for p in cands:
         entry = {"path": p}
@@ -202,13 +234,24 @@ def sfm_probe_paths():
             if entry["r2"] == "OK":
                 res["winner"] = {"path": p, "arity": 2, "name": "PROBE_MODEL"}
                 break
+    # 3) does an animation set need to exist first? try the valve order:
+    #    shot -> CreateModel -> CreateAnimationSet(target=model)
+    if res["winner"] is None and shot is not None:
+        try:
+            m = sfm.CreateModel("models/player/hwm/scout.mdl")
+            res["ctx"]["with_shot_create"] = "OK" if m is not None else "None"
+            if m is not None:
+                a = sfm.CreateAnimationSet("PROBE", target=m)
+                res["ctx"]["animset"] = "OK" if a is not None else "None"
+        except Exception as e:
+            res["ctx"]["with_shot_error"] = str(e)[:140]
     try:
         with open(out, "w") as f:
             json.dump(res, f, indent=2)
     except Exception:
         pass
-    print("[sfm_bridge] probe_paths winner=%s" % res["winner"])
-    return {"ok": True, "winner": res["winner"],
+    print("[sfm_bridge] probe_paths winner=%s ctx=%s" % (res["winner"], res["ctx"]))
+    return {"ok": True, "winner": res["winner"], "ctx": res["ctx"],
             "tried_count": len(res["tries"]), "file": out}
 
 
