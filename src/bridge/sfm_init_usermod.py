@@ -51,6 +51,9 @@ SESSION = os.path.join(QUEUE, "last_session.json")
 DIAG = os.path.join(QUEUE, "diagnose.json")
 AUTOSAVE_DIR = os.path.join(WORKDIR, "autosaves")
 
+# Tracks whether a document is open, so we can re-diagnose when it changes.
+_last_doc_state = None
+
 
 def log(msg):
     try:
@@ -95,18 +98,28 @@ def heartbeat():
 
 # ---------------------------------------------------------------- models
 def path_candidates():
+    """Model paths SFM actually accepts.
+    tf/gameinfo.txt SearchPaths:
+        Game |gameinfo_path| .   -> tf/models/...
+        Game tf                  -> tf/tf/models/...
+        |all_source_engine_paths|hl2 -> hl2/models/...
+    So the virtual path for TF2 content is models/player/hwm/<class>.mdl
+    and hl2/models/... for HL2 content."""
     gd = "D:/SteamLibrary/steamapps/common/SourceFilmmaker/game"
     rels = ["models/player/hwm/scout.mdl", "models/player/hwm/soldier.mdl",
-            "models/player/hwm/spy.mdl", "models/bots/soldier_boss/bot_soldier_boss.mdl",
+            "models/player/hwm/spy.mdl",
+            "models/bots/soldier_boss/bot_soldier_boss.mdl",
             "models/bots/soldier/bot_soldier.mdl",
             "models/props_c17/oildrum001.mdl",
-            "models/props_lab/consolebox01a.mdl"]
+            "models/props_lab/consolebox01a.mdl",
+            "models/props_phx/construct/metal_doorbell_button.mdl"]
     out = []
     for r in rels:
         out.append(r)
         out.append("tf/" + r)
         out.append(gd + "/" + r)
         out.append(gd + "/tf/" + r)
+        out.append(gd + "/tf/tf/" + r)
     seen = set()
     res = []
     for c in out:
@@ -386,6 +399,19 @@ def poll_once():
             res = {"ok": False, "error": traceback.format_exc(limit=3)}
         res["id"] = cmd.get("id")
         res["finished_at"] = time.time()
+        # A command that failed only because no document was open is retried
+        # later, when the operator opens a session.
+        retryable = (not res.get("ok")) and (
+            res.get("code") == "NO_SHOT" or "no document" in str(res.get("error", ""))
+            or "no shot" in str(res.get("error", "")))
+        if retryable:
+            # keep it in the inbox for the next poll
+            try:
+                res["retry_pending"] = True
+                atomic_write(os.path.join(OUTBOX, n + ".pending"), res)
+            except Exception:
+                pass
+            continue
         try:
             atomic_write(os.path.join(OUTBOX, n), res)
             os.remove(p)
@@ -398,6 +424,23 @@ def poll_once():
     heartbeat()
     log("batch done: %d ok, %d failed" % (done, failed))
     return done, failed
+
+
+def _refresh_diagnose_if_needed():
+    """Re-run diagnosis when the document state changes (session opened)."""
+    global _last_doc_state
+    try:
+        has = bool(sfmApp.HasDocument())
+    except Exception:
+        has = False
+    if has == _last_doc_state:
+        return
+    _last_doc_state = has
+    log("document state changed -> %s, re-diagnosing" % has)
+    try:
+        diagnose()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------- autosave
@@ -509,6 +552,7 @@ def _thread_worker():
             pass
         while True:
             try:
+                _refresh_diagnose_if_needed()
                 poll_once()
             except Exception:
                 pass
