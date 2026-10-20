@@ -475,6 +475,15 @@ def main():
     atomic_write(HEARTBEAT, {"ts": time.time(), "ctx": "gui",
                               "have_qt": HAVE_QT, "have_sfm": HAVE_SFM,
                               "have_app": HAVE_APP, "pid": os.getpid()})
+    # Fingerprint file so the MCP side can prove WHICH script version ran.
+    try:
+        fp = os.path.join(QUEUE, "which_script.txt")
+        with open(fp, "w") as f:
+            f.write("GUI-PLACER v1 pid=%s time=%s\n"
+                    % (os.getpid(), time.strftime("%H:%M:%S")))
+    except Exception:
+        pass
+    log("[honey/gui] running GUI-PLACER v1")
     try:
         names = sorted(os.listdir(INBOX))
     except Exception:

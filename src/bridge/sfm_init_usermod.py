@@ -685,7 +685,7 @@ def _auto_trigger_pending():
         sfmApp.RescanScriptMenus()
     except Exception:
         pass
-    r = trigger_scripts_menu("honey_place_models")
+    r = trigger_scripts_menu("honey_gui_v1")
     log("auto trigger: %s" % (r.get("triggered") or r.get("error")))
 
 
