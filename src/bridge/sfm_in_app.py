@@ -76,18 +76,23 @@ def sfm_find_shot(name=None):
 
 
 def sfm_model_path_candidates(asset_path):
-    """SFM accepts different relative forms depending on how the model was
-    registered. Try them in order and use the first that loads."""
+    """SFM loads models from the game content tree.
+    Verified from Valve's own session files (tf_movies/.../mtt_soldier.dmx):
+    the working form is "models/player/hwm/<class>.mdl" (HWM only).
+    Non-HWM paths return None from CreateModel."""
     raw = str(asset_path).replace("\\", "/").strip()
     cands = [raw]
-    if raw.lower().startswith("tf/"):
-        cands.append(raw[3:])
-    if not raw.lower().startswith("tf/") and not raw.lower().startswith("models/"):
-        cands.append("tf/" + raw)
-    if not raw.lower().startswith("models/"):
-        cands.append("models/" + raw.split("/")[-2] + "/" + raw.split("/")[-1]
-                     if "/" in raw else raw)
-    # absolute form
+    parts = raw.split("/")
+    fname = parts[-1]
+    folder = parts[-2] if len(parts) >= 2 else ""
+    if folder and folder != "hwm":
+        # insert hwm segment if a class model is given
+        cands.append(raw[:raw.rfind("/") + 1] + "hwm/" + fname)
+    if fname.startswith("bot_"):
+        cands.append("models/bots/" + fname)
+    else:
+        cands.append("models/player/hwm/" + fname)
+    cands.append("models/player/hwm/" + fname)
     try:
         import sfm
         gd = sfm.GetSteamDir() if hasattr(sfm, "GetSteamDir") else None
@@ -237,6 +242,21 @@ def sfm_diagnose():
     return rep
 
 
+def sfm_save_session():
+    """Save the open SFM document so work is never lost to a crash."""
+    try:
+        import sfmApp
+    except Exception:
+        return {"ok": False, "error": "no sfmApp module"}
+    if not _safe(lambda: bool(sfmApp.HasDocument())):
+        return {"ok": False, "error": "no document open"}
+    try:
+        r = sfmApp.SaveDocument()
+        return {"ok": True, "saved": True, "result": str(r)[:120]}
+    except Exception as e:
+        return {"ok": False, "error": "SaveDocument failed: %s" % e}
+
+
 def sfm_place_model(name, asset_path, pos=None, shot_name=None):
     """Real placement via Valve's sfmUtils pattern. Returns dict result."""
     try:
@@ -293,8 +313,10 @@ def sfm_place_model(name, asset_path, pos=None, shot_name=None):
             moved = [float(pos[0]), float(pos[1]), float(pos[2])]
         except Exception as e:
             moved = "Move failed: %s (placed at origin)" % e
+    saved = sfm_save_session()
     return {"ok": True, "name": name, "path": used, "shot": how,
-            "animSet": bool(animSet is not None), "moved": moved}
+            "animSet": bool(animSet is not None), "moved": moved,
+            "saved": saved.get("ok"), "save_error": saved.get("error", "")}
 
 
 def sfm_set_transform(name, pos=None, rot=None):
