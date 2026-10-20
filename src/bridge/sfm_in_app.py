@@ -134,6 +134,84 @@ def sfm_probe_create_model(path="models/player/scout.mdl"):
     return {"ok": False, "error": "no variant loaded", "results": res}
 
 
+def sfm_path_candidates_all():
+    """Every plausible path form SFM might accept, plus every arity 1..2.
+    Verified reference (Valve tf_movies sessions): models/player/hwm/scout.mdl
+    relative to the *game* dir, which for TF2 content means tf/... .
+    """
+    rel = ["models/player/hwm/scout.mdl", "player/hwm/scout.mdl",
+           "hwm/scout.mdl", "scout.mdl", "models/player/scout.mdl",
+           "player/scout.mdl", "models/scout.mdl"]
+    out = []
+    for r in rel:
+        out.append(r)
+        out.append("tf/" + r)
+        out.append("models/" + r)
+        out.append("tf/models/" + r.split("/", 1)[-1] if "/" in r else r)
+        out.append("game/" + r)
+        out.append("usermod/" + r)
+    for r in list(rel):
+        out.append(r.replace("/", "\\"))
+        out.append("tf\\" + r.replace("/", "\\"))
+    gd = "D:/SteamLibrary/steamapps/common/SourceFilmmaker/game"
+    for base in [gd, gd + "/tf"]:
+        for r in ["models/player/hwm/scout.mdl", "player/hwm/scout.mdl",
+                  "hwm/scout.mdl", "scout.mdl"]:
+            out.append(base + "/" + r)
+    seen = set()
+    res = []
+    for c in out:
+        if c and c not in seen:
+            seen.add(c)
+            res.append(c)
+    return res
+
+
+def sfm_probe_paths():
+    """Try many path forms x arity 1..2, write results to disk.
+    Only string args are used, so the native binding cannot crash on arity."""
+    import traceback
+    res = {"tries": [], "winner": None}
+    out = os.path.join(QUEUE, "probe_paths.json")
+    try:
+        import sfm
+    except Exception:
+        return {"ok": False, "error": "no sfm module"}
+    cands = sfm_path_candidates_all()
+    for p in cands:
+        entry = {"path": p}
+        try:
+            m = sfm.CreateModel(p)
+            entry["r1"] = "OK" if m is not None else "None"
+        except Exception as e:
+            entry["r1"] = "ERR " + str(e)[:90]
+        if entry["r1"] == "OK":
+            res["tries"].append(entry)
+            res["winner"] = {"path": p, "arity": 1}
+            break
+        res["tries"].append(entry)
+    if res["winner"] is None:
+        for p in cands[:20]:
+            entry = {"path": p, "arity": 2}
+            try:
+                m = sfm.CreateModel("PROBE_MODEL", p)
+                entry["r2"] = "OK" if m is not None else "None"
+            except Exception as e:
+                entry["r2"] = "ERR " + str(e)[:90]
+            res["tries"].append(entry)
+            if entry["r2"] == "OK":
+                res["winner"] = {"path": p, "arity": 2, "name": "PROBE_MODEL"}
+                break
+    try:
+        with open(out, "w") as f:
+            json.dump(res, f, indent=2)
+    except Exception:
+        pass
+    print("[sfm_bridge] probe_paths winner=%s" % res["winner"])
+    return {"ok": True, "winner": res["winner"],
+            "tried_count": len(res["tries"]), "file": out}
+
+
 def _safe(fn, default=None):
     try:
         return fn()
@@ -395,6 +473,10 @@ def handle(cmd):
         if name == "probe_model":
             r = sfm_probe_create_model(params.get("path",
                                                   "models/player/scout.mdl"))
+            r["id"] = cmd.get("id")
+            return r
+        if name == "probe_paths":
+            r = sfm_probe_paths()
             r["id"] = cmd.get("id")
             return r
         if name == "set_transform":
