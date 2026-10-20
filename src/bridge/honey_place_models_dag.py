@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-# HoneyFilmmaker model placer.
+# HoneyFilmmaker DAG-context placer.
 # INSTALL AS: game/usermod/scripts/sfm/dag/exact/count1/honey_place_models.py
 #
-# This file is executed from the DAG right-click menu (exact 1 node selected).
-# That context is required: SFM's CreateModel only returns a model when the
-# script runs in the dag/animset context. In the global sfm_init.py context
-# and in the Script Editor it always returns None.
+# SFM's CreateModel only returns a model when the script runs in the
+# dag/animset context (Valve docs: "Python script commands" lists
+# global / animset-context / dag-context / sfm_init as separate contexts).
+# In the global sfm_init.py context and in the Script Editor it returns None.
 #
-# It reads the HoneyFilmmaker command queue and places any pending models.
+# This file is reached from the DAG right-click menu (exactly 1 node selected).
 
 import os
 import json
@@ -37,7 +37,6 @@ QUEUE = os.path.join(WORKDIR, "bridge_queue")
 INBOX = os.path.join(QUEUE, "inbox")
 OUTBOX = os.path.join(QUEUE, "outbox")
 HEARTBEAT = os.path.join(QUEUE, "heartbeat.json")
-
 GD = "D:/SteamLibrary/steamapps/common/SourceFilmmaker/game"
 
 
@@ -151,10 +150,22 @@ def place(name, model_path, pos):
             sfm.SelectDag(dag)
             sfm.Move(float(pos[0]), float(pos[1]), float(pos[2]))
             moved = [float(pos[0]), float(pos[1]), float(pos[2])]
-        except Exception as e:
-            moved = "Move failed: %s" % e
+        except Exception:
+            moved = "Move failed"
     return {"ok": True, "name": name, "path": used, "shot": how,
             "animset": animset is not None, "moved": moved, "tried": tried[:8]}
+
+
+def save():
+    if not HAVE_APP:
+        return {"ok": False}
+    try:
+        if not sfmApp.HasDocument():
+            return {"ok": False, "error": "no document"}
+        sfmApp.SaveDocument()
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def main():
@@ -198,6 +209,8 @@ def main():
             res = {"ok": True, "ctx": "dag", "shot_source": how,
                    "shot_name": None if shot is None else str(shot.GetName()),
                    "model_fns": [x for x in dir(sfm) if "odel" in x]}
+        elif cname == "save":
+            res = save()
         else:
             res = {"ok": False, "error": "unsupported in dag ctx: %s" % cname}
         res["id"] = cmd.get("id")
