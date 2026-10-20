@@ -54,6 +54,10 @@ AUTOSAVE_DIR = os.path.join(WORKDIR, "autosaves")
 # Tracks whether a document is open, so we can re-diagnose when it changes.
 _last_doc_state = None
 
+# Kept at module level so Python's GC cannot collect the live timers.
+_poll_timer = None
+_autosave_timer = None
+
 
 def log(msg):
     try:
@@ -444,47 +448,36 @@ def _refresh_diagnose_if_needed():
 
 
 # ---------------------------------------------------------------- autosave
-def start_autosave(interval_sec=300):
-    if not (HAVE_APP and HAVE_QT):
-        return False
-
-    def _tick():
-        try:
-            if not sfmApp.HasDocument():
-                return
-            name = str(sfmApp.GetMovie().name)
-        except Exception:
-            return
-        safe = re.sub(r'[\/:*?"<>|]', '', name)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        target = "usermod/elements/sessions/autosaves/%s-%s.dmx" % (safe, stamp)
-        try:
-            sfmApp.SaveDocument(target)
-            log("autosaved %s" % target)
-        except Exception as e:
-            log("autosave failed: %s" % e)
-
+def _autosave_once():
+    """Save a timestamped copy of the session. Runs on the main thread."""
     try:
-        timer = QtCore.QTimer()
-        timer.timeout.connect(_tick)
-        timer.start(interval_sec * 1000)
-        QtCore.QCoreApplication.instance().aboutToQuit.connect(
-            lambda: shiboken.delete(timer))
-        log("autosave every %ss" % interval_sec)
-        return True
+        if not sfmApp.HasDocument():
+            return
+        name = str(sfmApp.GetMovie().name)
+    except Exception:
+        return
+    safe = re.sub(r'[\/:*?"<>|]', '', name)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target = "usermod/elements/sessions/autosaves/%s-%s.dmx" % (safe, stamp)
+    try:
+        sfmApp.SaveDocument(target)
+        log("autosaved %s" % target)
     except Exception as e:
-        log("autosave timer failed: %s" % e)
-        return False
+        log("autosave failed: %s" % e)
 
 
 # ---------------------------------------------------------------- bootstrap
-def _delayed_start():
-    """Run the real work. Must never raise out of here: a crash here kills
-    the whole bridge silently, so everything is wrapped and logged to disk."""
+def _start_workers():
+    """Create the poll/autosave timers on the MAIN thread.
+    SFM's API is not thread-safe: calling sfm/sfmApp from a worker thread
+    crashes SFM. Qt timers run on the main thread, which is what Valve's own
+    autosave script uses. The timer objects are kept in module globals so
+    Python's GC cannot collect them (that silently stops the poll)."""
+    global _poll_timer, _autosave_timer
     try:
         ensure_dirs()
         heartbeat()
-        log("=== HoneyFilmmaker bridge start (delayed) ===")
+        log("=== HoneyFilmmaker bridge start ===")
         log("sfm=%s vs=%s sfmApp=%s qt=%s" % (HAVE_SFM, HAVE_VS, HAVE_APP, HAVE_QT))
         try:
             diagnose()
@@ -494,33 +487,48 @@ def _delayed_start():
             poll_once()
         except Exception:
             log("poll failed: %s" % traceback.format_exc(limit=2))
-        if HAVE_QT:
-            try:
-                poll_timer = QtCore.QTimer()
-                poll_timer.timeout.connect(poll_once)
-                poll_timer.start(2000)
-                globals()["_poll_timer"] = poll_timer
-                start_autosave(300)
-                log("poll timer 2s active")
-            except Exception as e:
-                log("poll timer failed: %s" % e)
+        if not HAVE_QT:
+            log("no Qt: queue handled on next manual run")
+            return
+        try:
+            if _poll_timer is None:
+                _poll_timer = QtCore.QTimer()
+                _poll_timer.timeout.connect(_tick)
+            _poll_timer.start(2000)
+            log("poll timer 2s active")
+        except Exception as e:
+            log("poll timer failed: %s" % e)
+        try:
+            if _autosave_timer is None:
+                _autosave_timer = QtCore.QTimer()
+                _autosave_timer.timeout.connect(_autosave_tick)
+            _autosave_timer.start(300 * 1000)
+            log("autosave timer 300s active")
+        except Exception as e:
+            log("autosave timer failed: %s" % e)
     except Exception:
         try:
             with open(os.path.join(QUEUE, "startup_error.txt"), "w") as f:
                 f.write(traceback.format_exc())
         except Exception:
             pass
-        log("delayed start error: %s" % traceback.format_exc(limit=3))
+        log("worker start error: %s" % traceback.format_exc(limit=3))
 
 
-def _loop_worker():
-    """Background poll loop that does not depend on Qt at all."""
-    while True:
-        try:
-            poll_once()
-        except Exception:
-            pass
-        time.sleep(2)
+def _tick():
+    """Main-thread poll tick."""
+    try:
+        _refresh_diagnose_if_needed()
+    except Exception:
+        pass
+    try:
+        poll_once()
+    except Exception:
+        pass
+
+
+def _autosave_tick():
+    _autosave_once()
 
 
 def bootstrap():
@@ -531,46 +539,16 @@ def bootstrap():
     heartbeat()
     if HAVE_QT:
         try:
-            QtCore.QTimer.singleShot(3000, _delayed_start)
-            log("delayed start scheduled in 3s")
+            # 3s after startup the SFM event loop is running.
+            QtCore.QTimer.singleShot(3000, _start_workers)
+            log("workers scheduled in 3s")
         except Exception as e:
             log("singleShot failed: %s" % e)
-            _delayed_start()
     else:
-        _delayed_start()
-
-
-# Run the poll loop on a plain thread: it never depends on the Qt event loop
-# being alive. Also runs the one-shot diagnosis first.
-def _thread_worker():
-    import threading
-
-    def _run():
-        try:
-            _delayed_start()
-        except Exception:
-            pass
-        while True:
-            try:
-                _refresh_diagnose_if_needed()
-                poll_once()
-            except Exception:
-                pass
-            time.sleep(2)
-
-    try:
-        t = threading.Thread(target=_run)
-        t.daemon = True
-        t.start()
-        log("poll thread started")
-    except Exception as e:
-        log("thread failed: %s" % e)
+        _start_workers()
 
 
 try:
     bootstrap()
 except Exception:
     log("bootstrap error: %s" % traceback.format_exc(limit=3))
-
-# Always start the thread worker: it is the reliable path.
-_thread_worker()
