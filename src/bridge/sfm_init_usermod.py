@@ -305,6 +305,39 @@ def list_objects():
     return {"ok": True, "shots": out}
 
 
+def _console_cmds():
+    """Run read-only SFM console commands and capture their output.
+    This tells us the real search paths SFM uses for models."""
+    out = {}
+    try:
+        from PySide import QtGui
+    except Exception as e:
+        return {"error": "no QtGui: %s" % e}
+    try:
+        console = sfmApp.GetMainWindow()
+    except Exception as e:
+        return {"error": "GetMainWindow: %s" % e}
+    if console is None:
+        return {"error": "no main window"}
+    try:
+        for w in QtGui.QApplication.instance().topLevelWidgets():
+            name = w.metaObject().className()
+            if "Console" in name:
+                for child in w.findChildren(QtGui.QTextEdit):
+                    child.append("fs_searchpaths\n")
+                for child in w.findChildren(QtGui.QPlainTextEdit):
+                    child.appendPlainText("fs_searchpaths\n")
+                out["console_widget"] = name
+                break
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    try:
+        out["search_paths_attr"] = str(vs.GetSearchPaths()) if hasattr(vs, "GetSearchPaths") else "n/a"
+    except Exception as e:
+        out["search_paths_attr"] = "ERR " + str(e)[:100]
+    return out
+
+
 def diagnose():
     rep = {"ts": time.time(), "have_sfm": HAVE_SFM, "have_vs": HAVE_VS,
            "have_qt": HAVE_QT, "have_app": HAVE_APP, "pid": os.getpid(),
@@ -342,6 +375,10 @@ def diagnose():
         rep["scripts_menu"] = items
     except Exception as e:
         rep["scripts_menu_error"] = str(e)[:120]
+    try:
+        rep["console"] = _console_cmds()
+    except Exception as e:
+        rep["console_error"] = str(e)[:150]
     atomic_write(DIAG, rep)
     log("diagnose written")
     return rep

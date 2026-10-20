@@ -63,6 +63,8 @@ def atomic_write(path, data):
 
 
 def candidates():
+    """Model paths to try. The virtual path depends on which game folder is
+    mounted, so several forms are tried."""
     rels = ["models/player/hwm/scout.mdl", "models/player/hwm/soldier.mdl",
             "models/player/hwm/spy.mdl",
             "models/bots/soldier_boss/bot_soldier_boss.mdl",
@@ -81,6 +83,36 @@ def candidates():
             seen.add(c)
             res.append(c)
     return res
+
+
+def mdl_cache_probe():
+    """Ask the model cache which paths it knows.
+    vs.g_pDataModel and the studio mdl cache expose the loaded assets."""
+    info = {}
+    try:
+        cache = vs.g_pStudioModelCache
+        info["cache"] = str(cache)
+    except Exception as e:
+        info["cache"] = "ERR " + str(e)[:80]
+    for attr in ["GetModel", "GetModelPath", "FindModel", "GetLoadedModels"]:
+        try:
+            f = getattr(vs, attr, None)
+            if f is not None:
+                info[attr] = str(getattr(f, "__doc__", ""))[:200]
+        except Exception:
+            pass
+    try:
+        import sfm
+        info["sfm_model_fns"] = [x for x in dir(sfm) if "odel" in x.lower()]
+    except Exception as e:
+        info["sfm_model_fns"] = "ERR " + str(e)[:80]
+    # try a few path shapes derived from the mdl cache directory
+    extra = []
+    try:
+        info["studio_root"] = str(vs.GetStudioRoot())[:200]
+    except Exception as e:
+        info["studio_root"] = "ERR " + str(e)[:80]
+    return info
 
 
 def find_shot():
@@ -232,7 +264,8 @@ def main():
             shot, how = find_shot()
             res = {"ok": True, "ctx": "dag", "shot_source": how,
                    "shot_name": None if shot is None else str(shot.GetName()),
-                   "model_fns": [x for x in dir(sfm) if "odel" in x]}
+                   "model_fns": [x for x in dir(sfm) if "odel" in x],
+                   "cache": mdl_cache_probe()}
         elif cname == "save":
             res = save()
         else:
