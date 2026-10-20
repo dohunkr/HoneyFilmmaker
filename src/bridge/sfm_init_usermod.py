@@ -435,38 +435,48 @@ def start_autosave(interval_sec=300):
 
 
 # ---------------------------------------------------------------- bootstrap
+def _delayed_start():
+    """Qt timers must be created after the SFM event loop is up.
+    SFM calls sfm_init before the loop starts, so schedule the real work."""
+    try:
+        heartbeat()
+        log("=== HoneyFilmmaker bridge start (delayed) ===")
+        log("sfm=%s vs=%s sfmApp=%s qt=%s" % (HAVE_SFM, HAVE_VS, HAVE_APP, HAVE_QT))
+        try:
+            diagnose()
+        except Exception:
+            log("diagnose failed: %s" % traceback.format_exc(limit=2))
+        try:
+            poll_once()
+        except Exception:
+            log("poll failed: %s" % traceback.format_exc(limit=2))
+        if HAVE_QT:
+            try:
+                poll_timer = QtCore.QTimer()
+                poll_timer.timeout.connect(poll_once)
+                poll_timer.start(2000)
+                globals()["_poll_timer"] = poll_timer
+                start_autosave(300)
+                log("poll timer 2s active")
+            except Exception as e:
+                log("poll timer failed: %s" % e)
+    except Exception:
+        log("delayed start error: %s" % traceback.format_exc(limit=3))
+
+
 def bootstrap():
     ensure_dirs()
-    log("=== HoneyFilmmaker bridge start ===")
-    log("sfm=%s vs=%s sfmApp=%s qt=%s" % (HAVE_SFM, HAVE_VS, HAVE_APP, HAVE_QT))
+    log("USERMOD: Python initial startup complete")
+    log("HoneyFilmmaker: sfm_init loaded (sfm=%s vs=%s qt=%s)"
+        % (HAVE_SFM, HAVE_VS, HAVE_QT))
     heartbeat()
-    # immediate diagnosis so the MCP side can see the real context
-    try:
-        diagnose()
-    except Exception:
-        log("diagnose failed: %s" % traceback.format_exc(limit=2))
-    # process the queue right away
-    try:
-        poll_once()
-    except Exception:
-        log("poll failed: %s" % traceback.format_exc(limit=2))
-    # periodic poll + autosave
     if HAVE_QT:
         try:
-            poll_timer = QtCore.QTimer()
-            poll_timer.timeout.connect(poll_once)
-            poll_timer.start(2000)
-            start_autosave(300)
-            log("poll timer 2s active")
+            # 3s after startup the event loop is running: timers work.
+            QtCore.QTimer.singleShot(3000, _delayed_start)
+            log("delayed start scheduled in 3s")
         except Exception as e:
-            log("poll timer failed: %s" % e)
+            log("singleShot failed: %s" % e)
+            _delayed_start()
     else:
-        log("no Qt: queue will be processed on next manual run")
-
-
-log("USERMOD: Python initial startup complete")
-log("HoneyFilmmaker: Python sfm_init loaded")
-try:
-    bootstrap()
-except Exception:
-    log("bootstrap error: %s" % traceback.format_exc(limit=3))
+        _delayed_start()
