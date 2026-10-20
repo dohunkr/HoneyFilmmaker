@@ -573,6 +573,13 @@ def _start_workers():
         heartbeat()
         log("=== HoneyFilmmaker bridge start ===")
         log("sfm=%s vs=%s sfmApp=%s qt=%s" % (HAVE_SFM, HAVE_VS, HAVE_APP, HAVE_QT))
+        # SFM caches the script menu at startup. Rescan so a newly installed
+        # script (or an updated one) is actually registered.
+        try:
+            sfmApp.RescanScriptMenus()
+            log("script menus rescanned")
+        except Exception as e:
+            log("rescan failed: %s" % e)
         try:
             diagnose()
         except Exception:
@@ -672,6 +679,12 @@ def _auto_trigger_pending():
     if now - _last_trigger < 5:
         return
     _last_trigger = now
+    # SFM caches the script menu. Rescan before triggering so an updated
+    # script file is the one that actually runs.
+    try:
+        sfmApp.RescanScriptMenus()
+    except Exception:
+        pass
     r = trigger_scripts_menu("honey_place_models")
     log("auto trigger: %s" % (r.get("triggered") or r.get("error")))
 
