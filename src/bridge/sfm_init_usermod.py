@@ -307,32 +307,49 @@ def list_objects():
 
 def _console_cmds():
     """Run read-only SFM console commands and capture their output.
-    This tells us the real search paths SFM uses for models."""
+    The console widget text is truncated, so we also dump the full text
+    to a file after each command."""
     out = {}
     try:
         from PySide import QtGui
     except Exception as e:
         return {"error": "no QtGui: %s" % e}
-    # sfmApp.ExecuteGameCommand runs a console command in SFM.
-    for cmd in ["fs_searchpaths", "cl_showfps", "fs_print_searchpaths"]:
+    dump = os.path.join(QUEUE, "console.txt")
+
+    def _dump(tag):
+        try:
+            app = QtGui.QApplication.instance()
+            chunks = []
+            for w in app.topLevelWidgets():
+                for child in w.findChildren(QtGui.QTextEdit):
+                    chunks.append(str(child.toPlainText()))
+                for child in w.findChildren(QtGui.QPlainTextEdit):
+                    chunks.append(str(child.toPlainText()))
+            with open(dump, "a") as f:
+                f.write("\n===== %s =====\n" % tag)
+                f.write("\n".join(chunks)[-20000:])
+            return "\n".join(chunks)
+        except Exception as e:
+            return "dump error: %s" % e
+
+    for cmd in ["fs_searchpaths", "fs_print_searchpaths"]:
         try:
             r = sfmApp.ExecuteGameCommand(cmd)
-            out["cmd_" + cmd] = str(r)[:400]
+            out["cmd_" + cmd] = str(r)[:300]
         except Exception as e:
             out["cmd_" + cmd] = "ERR " + str(e)[:120]
-    # Try to find the console text widget and read its contents.
-    try:
-        app = QtGui.QApplication.instance()
-        found = []
-        for w in app.topLevelWidgets():
-            cn = w.metaObject().className()
-            for child in w.findChildren(QtGui.QTextEdit):
-                found.append({"widget": cn, "text": str(child.toPlainText())[-1500:]})
-            for child in w.findChildren(QtGui.QPlainTextEdit):
-                found.append({"widget": cn, "text": str(child.toPlainText())[-1500:]})
-        out["console_texts"] = found
-    except Exception as e:
-        out["console_read_error"] = str(e)[:200]
+        # let the console process the command, then read it back
+        try:
+            sfmApp.ProcessEvents()
+        except Exception:
+            pass
+        text = _dump(cmd)
+        # keep only the interesting tail after the command echo
+        low = text.lower()
+        pos = low.rfind(cmd.lower())
+        if pos >= 0:
+            out["tail_" + cmd] = text[pos:pos + 2000]
+    out["dump_file"] = dump
     try:
         out["search_paths_attr"] = str(vs.GetSearchPaths()) if hasattr(vs, "GetSearchPaths") else "n/a"
     except Exception as e:

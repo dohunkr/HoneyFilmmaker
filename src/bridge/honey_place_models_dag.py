@@ -86,33 +86,58 @@ def candidates():
 
 
 def mdl_cache_probe():
-    """Ask the model cache which paths it knows.
-    vs.g_pDataModel and the studio mdl cache expose the loaded assets."""
+    """Ask the model cache which paths it knows."""
     info = {}
     try:
-        cache = vs.g_pStudioModelCache
-        info["cache"] = str(cache)
+        info["cache"] = str(vs.g_pStudioModelCache)
     except Exception as e:
         info["cache"] = "ERR " + str(e)[:80]
-    for attr in ["GetModel", "GetModelPath", "FindModel", "GetLoadedModels"]:
-        try:
-            f = getattr(vs, attr, None)
-            if f is not None:
-                info[attr] = str(getattr(f, "__doc__", ""))[:200]
-        except Exception:
-            pass
     try:
         import sfm
         info["sfm_model_fns"] = [x for x in dir(sfm) if "odel" in x.lower()]
     except Exception as e:
         info["sfm_model_fns"] = "ERR " + str(e)[:80]
-    # try a few path shapes derived from the mdl cache directory
-    extra = []
-    try:
-        info["studio_root"] = str(vs.GetStudioRoot())[:200]
-    except Exception as e:
-        info["studio_root"] = "ERR " + str(e)[:80]
     return info
+
+
+def existing_model_paths():
+    """Read the model path of every game model already in the session.
+    These are the exact strings SFM itself uses, so they are the ground
+    truth for what CreateModel expects."""
+    found = []
+    try:
+        shot, _ = find_shot()
+    except Exception:
+        shot = None
+    if shot is None:
+        return found
+    try:
+        sets = shot.animationSets
+    except Exception:
+        return found
+    for aset in sets:
+        try:
+            gm = aset.gameModel
+        except Exception:
+            continue
+        for attr in ["model", "modelName", "path", "filename", "mdlpath"]:
+            try:
+                v = gm.GetValue(attr)
+                if v:
+                    found.append({"animset": str(aset.GetName()), "attr": attr,
+                                  "value": str(v)})
+            except Exception:
+                pass
+        # the model element itself often carries the path
+        try:
+            for el in gm.GetChildren():
+                nm = str(el.GetName())
+                if nm.lower().endswith(".mdl"):
+                    found.append({"animset": str(aset.GetName()),
+                                  "child": nm})
+        except Exception:
+            pass
+    return found
 
 
 def find_shot():
@@ -285,7 +310,8 @@ def main():
             res = {"ok": True, "ctx": "dag", "shot_source": how,
                    "shot_name": None if shot is None else str(shot.GetName()),
                    "model_fns": [x for x in dir(sfm) if "odel" in x],
-                   "cache": mdl_cache_probe()}
+                   "cache": mdl_cache_probe(),
+                   "existing_models": existing_model_paths()}
         elif cname == "save":
             res = save()
         else:
