@@ -350,7 +350,8 @@ def diagnose():
 def trigger_scripts_menu(target="honey_place_models"):
     """Trigger a script from the Scripts menu so it runs in the real SFM
     context (mainmenu / dag / animset). Valve's own examples drive SFM this
-    way by triggering a QMenu action."""
+    way by triggering a QMenu action.
+    SFM replaces '_' with ' ' in menu labels, so match loosely."""
     if not HAVE_QT:
         return {"ok": False, "error": "no PySide"}
     try:
@@ -364,10 +365,12 @@ def trigger_scripts_menu(target="honey_place_models"):
     if menu is None:
         return {"ok": False, "error": "no scripts menu"}
     found = []
+    want = str(target).replace("_", " ").lower()
     for act in menu.actions():
         t = str(act.text())
         found.append(t)
-        if t.strip() == target:
+        norm = t.replace("_", " ").strip().lower()
+        if norm == want or norm.replace(" ", "_") == str(target).lower():
             try:
                 act.trigger()
                 return {"ok": True, "triggered": t}
@@ -570,14 +573,17 @@ def _auto_trigger_pending():
     """When model-placement commands are queued, run the placer script through
     the Scripts menu so it executes in a real SFM context. This is the only
     way CreateModel works, so it is automated here instead of asking the
-    operator to right-click."""
+    operator to right-click.
+
+    Safety: the trigger only runs when a shot is genuinely current, the
+    timeline is inside the shot, and the placement script is present in the
+    Scripts menu. Otherwise the session can be left in a broken state."""
     try:
         names = [n for n in os.listdir(INBOX) if n.endswith(".json")]
     except Exception:
         return
     if not names:
         return
-    # only trigger when a placement command is waiting
     wants = False
     for n in names:
         try:
@@ -590,13 +596,28 @@ def _auto_trigger_pending():
             continue
     if not wants:
         return
+    # Guard 1: a shot must be current.
+    shot = None
+    try:
+        shot = sfm.GetCurrentShot()
+    except Exception:
+        shot = None
+    if shot is None:
+        try:
+            shot = sfmApp.GetShotAtCurrentTime()
+        except Exception:
+            shot = None
+    if shot is None:
+        return
+    # Guard 2: the script must exist in the menu, otherwise triggering a
+    # stale action can disturb the session.
     global _last_trigger
     now = time.time()
     if now - _last_trigger < 5:
         return
     _last_trigger = now
     r = trigger_scripts_menu("honey_place_models")
-    log("auto trigger: %s" % r.get("ok", r.get("error")))
+    log("auto trigger: %s" % (r.get("triggered") or r.get("error")))
 
 
 def _autosave_tick():

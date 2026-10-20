@@ -132,7 +132,31 @@ def place(name, model_path, pos):
             used = c
             break
     if model is None:
-        return {"ok": False, "error": "CreateModel failed", "tried": tried[:20]}
+        # CreateModel may require an animation-set context. Try assuming one
+        # (sfm.UsingAnimationSet) and re-test the most likely path.
+        tried2 = []
+        try:
+            cur = sfm.GetCurrentAnimationSet()
+            tried2.append("current animset: %s" % ("None" if cur is None
+                                                   else str(cur.GetName())))
+        except Exception as e:
+            tried2.append("GetCurrentAnimationSet: %s" % str(e)[:60])
+        for pth in [model_path] + candidates()[:6]:
+            if not pth:
+                continue
+            try:
+                m = sfm.CreateModel(pth)
+            except Exception as e:
+                tried2.append("%s -> ERR %s" % (pth, str(e)[:60]))
+                continue
+            tried2.append("%s -> %s" % (pth, "OK" if m is not None else "None"))
+            if m is not None:
+                model = m
+                used = pth
+                break
+        if model is None:
+            return {"ok": False, "error": "CreateModel failed",
+                    "tried": tried[:20], "tried2": tried2}
     animset = None
     try:
         animset = sfm.CreateAnimationSet(str(name), target=model)
