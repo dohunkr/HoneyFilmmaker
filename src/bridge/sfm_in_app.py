@@ -130,26 +130,51 @@ def sfm_diagnose():
         rep["sfmApp_import_error"] = traceback.format_exc(limit=2)
     # model load attempts
     tries = []
-    paths = [
-        "models/player/scout.mdl", "tf/models/player/scout.mdl",
-        "models/player/soldier.mdl",
-        "models/bots/soldier/bot_soldier.mdl",
-        "models/player/hwm/scout.mdl",
-    ]
-    for gd in [r"D:\SteamLibrary\steamapps\common\SourceFilmmaker\game",
-               r"D:\SteamLibrary\steamapps\common\SourceFilmmaker\game\tf"]:
-        for p in ["models/player/scout.mdl", "player/scout.mdl", "scout.mdl"]:
-            paths.append(gd.replace("\\", "/") + "/" + p)
+    GD = "D:/SteamLibrary/steamapps/common/SourceFilmmaker/game"
+    GDT = GD + "/tf"
+    rel = ["models/player/scout.mdl", "player/scout.mdl", "scout.mdl",
+           "models/player/scout", "tf/models/player/scout.mdl",
+           "models/player/scout.mdl"]
+    paths = list(rel)
+    for base in [GD, GDT]:
+        for p in ["models/player/scout.mdl", "player/scout.mdl", "scout.mdl",
+                  "models/player/scout"]:
+            paths.append(base + "/" + p)
+    # backslash forms
+    for p in ["tf\\models\\player\\scout.mdl", "models\\player\\scout.mdl",
+              "tf\\models\\player\\scout", "models\\player\\scout"]:
+        paths.append(p)
+    # props (simpler models) to test whether ANY model loads
+    for p in ["models/props_c17/oildrum001.mdl", "models/props_lab/consolebox01a.mdl",
+              "models/props_c17/FurnitureTable002a.mdl",
+              "models/props_phx/construct/metal_doorbell_button.mdl"]:
+        paths.append(p)
+    # hwm variants
+    paths.append("models/player/hwm/scout.mdl")
+    paths.append(GDT + "/models/player/hwm/scout.mdl")
+    seen = set()
+    ordered = []
+    for p in paths:
+        if p not in seen:
+            seen.add(p)
+            ordered.append(p)
     try:
         import sfm
-        for p in paths:
+        for p in ordered:
             try:
                 m = sfm.CreateModel(p)
                 tries.append({"path": p, "result": "OK" if m is not None else "None"})
-                if m is not None:
-                    break
             except Exception as e:
                 tries.append({"path": p, "error": str(e)[:120]})
+        # arity probing
+        arity = {}
+        for n in range(0, 5):
+            try:
+                sfm.CreateModel(*(["models/player/scout.mdl"] * n))
+                arity[str(n)] = "ok"
+            except Exception as e:
+                arity[str(n)] = str(e)[:140]
+        rep["create_model_arity"] = arity
     except Exception:
         pass
     rep["create_model_tries"] = tries
