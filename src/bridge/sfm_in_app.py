@@ -75,6 +75,33 @@ def sfm_find_shot(name=None):
     return shots[0], "sfmApp.GetShots[0]"
 
 
+def sfm_model_path_candidates(asset_path):
+    """SFM accepts different relative forms depending on how the model was
+    registered. Try them in order and use the first that loads."""
+    raw = str(asset_path).replace("\\", "/").strip()
+    cands = [raw]
+    if raw.lower().startswith("tf/"):
+        cands.append(raw[3:])
+    if not raw.lower().startswith("tf/") and not raw.lower().startswith("models/"):
+        cands.append("tf/" + raw)
+    if not raw.lower().startswith("models/"):
+        cands.append("models/" + raw.split("/")[-2] + "/" + raw.split("/")[-1]
+                     if "/" in raw else raw)
+    # absolute form
+    try:
+        import sfm
+        gd = sfm.GetSteamDir() if hasattr(sfm, "GetSteamDir") else None
+    except Exception:
+        gd = None
+    if gd:
+        cands.append(str(gd) + "/" + raw)
+    out = []
+    for c in cands:
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
 def sfm_place_model(name, asset_path, pos=None, shot_name=None):
     """Real placement via Valve's sfmUtils pattern. Returns dict result."""
     try:
@@ -91,35 +118,47 @@ def sfm_place_model(name, asset_path, pos=None, shot_name=None):
                 "error": "no shot available (%s)" % how,
                 "hint": "Open a session with a shot, or create one: "
                         "Timeline > right-click > Add Shot"}
-    path = str(asset_path).replace("\\", "/")
-    try:
-        model = sfm.CreateModel(path)
-    except Exception as e:
-        return {"ok": False, "error": "CreateModel raised: %s" % e}
+    cands = sfm_model_path_candidates(asset_path)
+    model = None
+    used = None
+    tried = []
+    for c in cands:
+        try:
+            m = sfm.CreateModel(c)
+        except Exception as e:
+            tried.append("%s -> raised %s" % (c, str(e)[:80]))
+            continue
+        tried.append("%s -> %s" % (c, "None" if m is None else "OK"))
+        if m is not None:
+            model = m
+            used = c
+            break
     if model is None:
-        return {"ok": False, "error": "CreateModel returned None for %s" % path,
-                "hint": "Check the .mdl exists under game/ (use search_assets)"}
+        return {"ok": False, "error": "CreateModel failed for all path forms",
+                "tried": tried,
+                "hint": "Use search_assets to get the exact path, or create the "
+                        "animation set manually in SFM"}
     try:
         animSet = sfm.CreateAnimationSet(str(name), target=model)
     except Exception as e:
         return {"ok": False, "error": "CreateAnimationSet raised: %s" % e,
-                "note": "model object was created"}
+                "note": "model object was created", "path_used": used}
     try:
         dag = vs.CreateElement("DmeDag", str(name), shot.GetFileId())
         dag.AddChild(model)
         shot.scene.AddChild(dag)
     except Exception as e:
         return {"ok": False, "error": "dag attach raised: %s" % e,
-                "note": "model+animSet exist"}
+                "note": "model+animSet exist", "path_used": used}
     moved = None
     if pos is not None:
         try:
             sfm.SelectDag(dag)
             sfm.Move(float(pos[0]), float(pos[1]), float(pos[2]))
-            moved = list(pos)
+            moved = [float(pos[0]), float(pos[1]), float(pos[2])]
         except Exception as e:
             moved = "Move failed: %s (placed at origin)" % e
-    return {"ok": True, "name": name, "path": path, "shot": how,
+    return {"ok": True, "name": name, "path": used, "shot": how,
             "animSet": bool(animSet is not None), "moved": moved}
 
 
