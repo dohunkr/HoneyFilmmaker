@@ -436,9 +436,10 @@ def start_autosave(interval_sec=300):
 
 # ---------------------------------------------------------------- bootstrap
 def _delayed_start():
-    """Qt timers must be created after the SFM event loop is up.
-    SFM calls sfm_init before the loop starts, so schedule the real work."""
+    """Run the real work. Must never raise out of here: a crash here kills
+    the whole bridge silently, so everything is wrapped and logged to disk."""
     try:
+        ensure_dirs()
         heartbeat()
         log("=== HoneyFilmmaker bridge start (delayed) ===")
         log("sfm=%s vs=%s sfmApp=%s qt=%s" % (HAVE_SFM, HAVE_VS, HAVE_APP, HAVE_QT))
@@ -461,7 +462,22 @@ def _delayed_start():
             except Exception as e:
                 log("poll timer failed: %s" % e)
     except Exception:
+        try:
+            with open(os.path.join(QUEUE, "startup_error.txt"), "w") as f:
+                f.write(traceback.format_exc())
+        except Exception:
+            pass
         log("delayed start error: %s" % traceback.format_exc(limit=3))
+
+
+def _loop_worker():
+    """Background poll loop that does not depend on Qt at all."""
+    while True:
+        try:
+            poll_once()
+        except Exception:
+            pass
+        time.sleep(2)
 
 
 def bootstrap():
@@ -472,7 +488,6 @@ def bootstrap():
     heartbeat()
     if HAVE_QT:
         try:
-            # 3s after startup the event loop is running: timers work.
             QtCore.QTimer.singleShot(3000, _delayed_start)
             log("delayed start scheduled in 3s")
         except Exception as e:
@@ -480,3 +495,38 @@ def bootstrap():
             _delayed_start()
     else:
         _delayed_start()
+
+
+# Run the poll loop on a plain thread: it never depends on the Qt event loop
+# being alive. Also runs the one-shot diagnosis first.
+def _thread_worker():
+    import threading
+
+    def _run():
+        try:
+            _delayed_start()
+        except Exception:
+            pass
+        while True:
+            try:
+                poll_once()
+            except Exception:
+                pass
+            time.sleep(2)
+
+    try:
+        t = threading.Thread(target=_run)
+        t.daemon = True
+        t.start()
+        log("poll thread started")
+    except Exception as e:
+        log("thread failed: %s" % e)
+
+
+try:
+    bootstrap()
+except Exception:
+    log("bootstrap error: %s" % traceback.format_exc(limit=3))
+
+# Always start the thread worker: it is the reliable path.
+_thread_worker()
