@@ -45,7 +45,37 @@ def heartbeat():
         pass
 
 
-def sfm_place_model(name, asset_path, pos=None):
+def sfm_find_shot(name=None):
+    """Get a shot without relying on UI selection.
+    Order: sfm.GetCurrentShot() -> sfmApp.GetShots()[0] -> sfmApp.GetShots()[name]."""
+    shot = None
+    try:
+        import sfm
+        shot = sfm.GetCurrentShot()
+    except Exception:
+        shot = None
+    if shot is not None:
+        return shot, "sfm.GetCurrentShot"
+    try:
+        import sfmApp
+        if not sfmApp.HasDocument():
+            return None, "no document open"
+        shots = sfmApp.GetShots()
+    except Exception as e:
+        return None, "sfmApp.GetShots failed: %s" % e
+    if not shots:
+        return None, "no shots in document"
+    if name:
+        for s in shots:
+            try:
+                if str(s.name) == str(name):
+                    return s, "sfmApp.GetShots[name=%s]" % name
+            except Exception:
+                continue
+    return shots[0], "sfmApp.GetShots[0]"
+
+
+def sfm_place_model(name, asset_path, pos=None, shot_name=None):
     """Real placement via Valve's sfmUtils pattern. Returns dict result."""
     try:
         import sfm
@@ -55,14 +85,12 @@ def sfm_place_model(name, asset_path, pos=None):
         import vs
     except Exception:
         return {"ok": False, "error": "no vs module (run inside SFM)"}
-    try:
-        shot = sfm.GetCurrentShot()
-    except Exception as e:
-        return {"ok": False, "error": "GetCurrentShot failed: %s" % e}
+    shot, how = sfm_find_shot(shot_name)
     if shot is None:
-        return {"ok": False, "code": "NO_CURRENT_SHOT",
-                "error": "no current shot",
-                "hint": "Double-click shot1 in the timeline, then retry"}
+        return {"ok": False, "code": "NO_SHOT",
+                "error": "no shot available (%s)" % how,
+                "hint": "Open a session with a shot, or create one: "
+                        "Timeline > right-click > Add Shot"}
     path = str(asset_path).replace("\\", "/")
     try:
         model = sfm.CreateModel(path)
@@ -91,7 +119,7 @@ def sfm_place_model(name, asset_path, pos=None):
             moved = list(pos)
         except Exception as e:
             moved = "Move failed: %s (placed at origin)" % e
-    return {"ok": True, "name": name, "path": path,
+    return {"ok": True, "name": name, "path": path, "shot": how,
             "animSet": bool(animSet is not None), "moved": moved}
 
 
@@ -158,7 +186,8 @@ def handle(cmd):
         if name == "add_model":
             r = sfm_place_model(params.get("name", "model"),
                                 params.get("asset_path", ""),
-                                params.get("pos"))
+                                params.get("pos"),
+                                params.get("shot"))
             r["id"] = cmd.get("id")
             r["session"] = info
             return r
