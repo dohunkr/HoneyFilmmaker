@@ -102,89 +102,137 @@ def sfm_model_path_candidates(asset_path):
     return out
 
 
-def sfm_diagnose():
-    """Collect everything the MCP side needs to debug SFM access.
-    Written to a file so the operator only has to press Submit once."""
-    import traceback
-    rep = {"ts": time.time(), "have_sfm": HAVE_SFM}
+def sfm_probe_create_model(path="models/player/scout.mdl"):
+    """Discover CreateModel's real signature WITHOUT crashing SFM.
+    Only 1..3 args are tried (0 args crashes the native binding)."""
+    res = []
     try:
         import sfm
-        rep["sfm_model_fns"] = [x for x in dir(sfm)
-                                if "odel" in x or "List" in x or "Path" in x]
+    except Exception:
+        return {"ok": False, "error": "no sfm module"}
+    variants = [
+        ("1arg_path", (path,)),
+        ("2arg_name_path", ("PROBE_MODEL", path)),
+        ("2arg_path_name", (path, "PROBE_MODEL")),
+        ("3arg_name_path_x", ("PROBE_MODEL", path, "")),
+    ]
+    for label, args in variants:
+        try:
+            m = sfm.CreateModel(*args)
+            res.append({"variant": label, "n": len(args),
+                        "result": "OK" if m is not None else "None"})
+            if m is not None:
+                return {"ok": True, "winner": label, "n": len(args),
+                        "results": res}
+        except Exception as e:
+            res.append({"variant": label, "n": len(args), "error": str(e)[:140]})
+    return {"ok": False, "error": "no variant loaded", "results": res}
+
+
+def _safe(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def _child_list(el):
+    """Best-effort child access for the vs datamodel."""
+    out = []
+    ch = _safe(lambda: el.children)
+    if ch is None:
+        return out
+    try:
+        for c in ch:
+            out.append(c)
+            if len(out) > 400:
+                break
+    except Exception:
+        pass
+    return out
+
+
+def _elem_info(el):
+    info = {"name": _safe(lambda: str(el.GetName()), "?"),
+            "type": _safe(lambda: str(el.GetTypeName()), "?")}
+    for attr in ["model", "modelPath", "path", "filename"]:
+        v = _safe(lambda a=attr: el.GetAttributeValue(a))
+        if v is not None:
+            info[attr] = str(v)
+    return info
+
+
+def sfm_diagnose():
+    """Read-only introspection of the SFM document.
+    NEVER calls CreateModel: a wrong arity crashes SFM natively.
+    Writes partial results to disk as it goes so a crash still leaves data."""
+    import traceback
+    rep = {"ts": time.time(), "have_sfm": HAVE_SFM, "safe": True}
+    out = os.path.join(QUEUE, "diagnose.json")
+
+    def flush():
+        try:
+            with open(out, "w") as f:
+                json.dump(rep, f, indent=2)
+        except Exception:
+            pass
+
+    flush()
+    try:
+        import sfm
         rep["sfm_fns_all"] = [x for x in dir(sfm) if not x.startswith("_")]
     except Exception:
-        rep["sfm_import_error"] = traceback.format_exc(limit=2)
+        rep["sfm_error"] = traceback.format_exc(limit=2)
+    flush()
     try:
         import sfmApp
         rep["sfmApp_fns"] = [x for x in dir(sfmApp) if not x.startswith("_")]
-        try:
-            rep["has_document"] = bool(sfmApp.HasDocument())
-        except Exception:
-            rep["has_document"] = None
-        try:
-            shots = sfmApp.GetShots()
-            rep["shots"] = [str(getattr(s, "name", "?")) for s in shots]
-        except Exception:
-            rep["shots_error"] = traceback.format_exc(limit=2)
+        rep["has_document"] = _safe(lambda: bool(sfmApp.HasDocument()))
+        shots = _safe(lambda: list(sfmApp.GetShots())) or []
+        rep["shots"] = [str(_safe(lambda s=s: s.GetName(), "?")) for s in shots]
     except Exception:
-        rep["sfmApp_import_error"] = traceback.format_exc(limit=2)
-    # model load attempts
-    tries = []
-    GD = "D:/SteamLibrary/steamapps/common/SourceFilmmaker/game"
-    GDT = GD + "/tf"
-    rel = ["models/player/scout.mdl", "player/scout.mdl", "scout.mdl",
-           "models/player/scout", "tf/models/player/scout.mdl",
-           "models/player/scout.mdl"]
-    paths = list(rel)
-    for base in [GD, GDT]:
-        for p in ["models/player/scout.mdl", "player/scout.mdl", "scout.mdl",
-                  "models/player/scout"]:
-            paths.append(base + "/" + p)
-    # backslash forms
-    for p in ["tf\\models\\player\\scout.mdl", "models\\player\\scout.mdl",
-              "tf\\models\\player\\scout", "models\\player\\scout"]:
-        paths.append(p)
-    # props (simpler models) to test whether ANY model loads
-    for p in ["models/props_c17/oildrum001.mdl", "models/props_lab/consolebox01a.mdl",
-              "models/props_c17/FurnitureTable002a.mdl",
-              "models/props_phx/construct/metal_doorbell_button.mdl"]:
-        paths.append(p)
-    # hwm variants
-    paths.append("models/player/hwm/scout.mdl")
-    paths.append(GDT + "/models/player/hwm/scout.mdl")
-    seen = set()
-    ordered = []
-    for p in paths:
-        if p not in seen:
-            seen.add(p)
-            ordered.append(p)
+        rep["sfmApp_error"] = traceback.format_exc(limit=2)
+    flush()
+
+    # Walk the document to find existing model paths SFM itself created.
+    found = []
+    roots = []
     try:
-        import sfm
-        for p in ordered:
-            try:
-                m = sfm.CreateModel(p)
-                tries.append({"path": p, "result": "OK" if m is not None else "None"})
-            except Exception as e:
-                tries.append({"path": p, "error": str(e)[:120]})
-        # arity probing
-        arity = {}
-        for n in range(0, 5):
-            try:
-                sfm.CreateModel(*(["models/player/scout.mdl"] * n))
-                arity[str(n)] = "ok"
-            except Exception as e:
-                arity[str(n)] = str(e)[:140]
-        rep["create_model_arity"] = arity
+        import sfmApp
+        root = _safe(lambda: sfmApp.GetDocumentRoot())
+        if root is not None:
+            roots.append(root)
     except Exception:
         pass
-    rep["create_model_tries"] = tries
-    out = os.path.join(QUEUE, "diagnose.json")
     try:
-        with open(out, "w") as f:
-            json.dump(rep, f, indent=2)
-        rep["written"] = out
+        import vs
+        sr = _safe(lambda: vs.GetStudioRoot())
+        if sr is not None:
+            roots.append(sr)
     except Exception:
-        rep["write_error"] = traceback.format_exc(limit=2)
+        pass
+    rep["root_count"] = len(roots)
+    seen = set()
+    stack = list(roots)
+    depth = 0
+    while stack and depth < 4000:
+        depth += 1
+        el = stack.pop()
+        try:
+            key = id(el)
+        except Exception:
+            key = None
+        if key is not None:
+            if key in seen:
+                continue
+            seen.add(key)
+        info = _elem_info(el)
+        if info.get("model") or "Model" in info.get("type", ""):
+            found.append(info)
+        stack.extend(_child_list(el))
+    rep["elements_walked"] = depth
+    rep["models_found"] = found[:40]
+    flush()
     print("[sfm_bridge] diagnose written to %s" % out)
     return rep
 
@@ -321,6 +369,11 @@ def handle(cmd):
             r = sfm_diagnose()
             r["id"] = cmd.get("id")
             r["ok"] = True
+            return r
+        if name == "probe_model":
+            r = sfm_probe_create_model(params.get("path",
+                                                  "models/player/scout.mdl"))
+            r["id"] = cmd.get("id")
             return r
         if name == "set_transform":
             r = sfm_set_transform(params.get("name", ""),
