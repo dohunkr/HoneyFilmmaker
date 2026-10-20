@@ -421,17 +421,29 @@ def trigger_scripts_menu(target="honey_place_models"):
     if menu is None:
         return {"ok": False, "error": "no scripts menu"}
     found = []
-    want = str(target).replace("_", " ").lower()
+    want = str(target).replace("_", " ").strip().lower()
     for act in menu.actions():
         t = str(act.text())
         found.append(t)
         norm = t.replace("_", " ").strip().lower()
-        if norm == want or norm.replace(" ", "_") == str(target).lower():
+        if norm == want:
             try:
                 act.trigger()
+                try:
+                    with open(os.path.join(QUEUE, "last_trigger.txt"), "w") as f:
+                        f.write("%s -> %s @ %s\n" % (target, t,
+                                                    time.strftime("%H:%M:%S")))
+                except Exception:
+                    pass
                 return {"ok": True, "triggered": t}
             except Exception as e:
                 return {"ok": False, "error": "trigger failed: %s" % e}
+    try:
+        with open(os.path.join(QUEUE, "last_trigger.txt"), "w") as f:
+            f.write("NOT FOUND target=%s menu=%s @ %s\n"
+                    % (target, found, time.strftime("%H:%M:%S")))
+    except Exception:
+        pass
     return {"ok": False, "error": "script not found in Scripts menu",
             "available": found}
 
