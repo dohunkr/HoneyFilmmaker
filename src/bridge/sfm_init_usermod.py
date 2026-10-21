@@ -654,7 +654,9 @@ def find_dock(title_part):
 
 
 def anim_set_editor_buttons():
-    """Buttons that belong to the Animation Set Editor dock."""
+    """Buttons that belong to the Animation Set Editor dock.
+    Returns a list of (widget, info-dict) so the caller can pick the add
+    button reliably and so failures can be diagnosed from a file."""
     out = []
     for w in top_widgets():
         try:
@@ -665,16 +667,90 @@ def anim_set_editor_buttons():
             continue
         if "animation set" not in title.lower():
             continue
-        try:
-            btns = w.findChildren(QtGui.QToolButton)
+        for cls in (QtGui.QToolButton, QtGui.QPushButton):
+            try:
+                btns = w.findChildren(cls)
+            except Exception:
+                continue
             for b in btns:
-                out.append(b)
-            btns2 = w.findChildren(QtGui.QPushButton)
-            for b in btns2:
-                out.append(b)
-        except Exception:
-            pass
+                info = {"class": str(b.metaObject().className()),
+                        "text": str(b.text()),
+                        "toolTip": str(b.toolTip()),
+                        "objectName": str(b.objectName()),
+                        "visible": bool(b.isVisible()),
+                        "x": b.x(), "y": b.y(),
+                        "w": b.width(), "h": b.height()}
+                out.append((b, info))
     return out
+
+
+def dump_buttons():
+    """Write the Animation Set Editor button inventory to a file."""
+    info = []
+    for _b, i in anim_set_editor_buttons():
+        info.append(i)
+    try:
+        with open(os.path.join(QUEUE, "buttons.json"), "w") as f:
+            json.dump(info, f, indent=2)
+    except Exception:
+        pass
+    return info
+
+
+def open_new_model_dialog(model_basename):
+    """Open the 'Create Animation Set for New Model' file dialog."""
+    buttons = anim_set_editor_buttons()
+    log("anim set editor buttons: %d" % len(buttons))
+    dump_buttons()
+    # Prefer a button that looks like "add" (plus icon, no text, top-left).
+    ordered = []
+    for b, i in buttons:
+        if not i.get("visible"):
+            continue
+        label = (i["text"] + " " + i["toolTip"] + " " + i["objectName"]).lower()
+        score = 50
+        if "add" in label or "new" in label or "create" in label:
+            score = 0
+        elif i["text"].strip() == "" and i["y"] < 40:
+            score = 1
+        ordered.append((score, i["y"], i["x"], b))
+    ordered.sort(key=lambda t: (t[0], t[1], t[2]))
+    for score, _y, _x, b in ordered:
+        try:
+            b.click()
+        except Exception:
+            continue
+        pump(350)
+        dlg = find_file_dialog()
+        if dlg is not None:
+            log("dialog opened via button (score %d)" % score)
+            return dlg
+        # a popup menu may have appeared
+        menu = None
+        for w in top_widgets():
+            try:
+                if isinstance(w, QtGui.QMenu) and w.isVisible():
+                    menu = w
+                    break
+            except Exception:
+                pass
+        if menu is not None:
+            for act in menu.actions():
+                try:
+                    if "new model" in str(act.text()).lower():
+                        act.trigger()
+                        pump(500)
+                        dlg = find_file_dialog()
+                        if dlg is not None:
+                            log("dialog opened via menu action")
+                            return dlg
+                except Exception:
+                    pass
+            try:
+                menu.close()
+            except Exception:
+                pass
+    return None
 
 
 def find_file_dialog():
@@ -809,58 +885,6 @@ def click_open(dlg):
         return False
 
 
-def open_new_model_dialog(model_basename):
-    """Open the 'Create Animation Set for New Model' file dialog."""
-    buttons = anim_set_editor_buttons()
-    log("anim set editor buttons: %d" % len(buttons))
-    for b in buttons:
-        try:
-            if b.isVisible() is False:
-                continue
-        except Exception:
-            pass
-        try:
-            b.click()
-        except Exception:
-            continue
-        pump(350)
-        # a popup menu may appear
-        try:
-            for m in QtGui.QApplication.instance().topLevelWidgets():
-                pass
-        except Exception:
-            pass
-        dlg = find_file_dialog()
-        if dlg is None:
-            # maybe a menu with "New Model"
-            menu = None
-            for w in top_widgets():
-                try:
-                    if isinstance(w, QtGui.QMenu):
-                        menu = w
-                        break
-                except Exception:
-                    pass
-            if menu is not None:
-                for act in menu.actions():
-                    try:
-                        if "new model" in str(act.text()).lower():
-                            act.trigger()
-                            pump(400)
-                            dlg = find_file_dialog()
-                            break
-                    except Exception:
-                        pass
-            if menu is not None:
-                try:
-                    menu.close()
-                except Exception:
-                    pass
-        if dlg is not None:
-            return dlg
-    return None
-
-
 def find_new_animset(before_names):
     shot = None
     try:
@@ -973,13 +997,30 @@ def sfm_create_model_variants():
 
 
 def sfm_try_create_models():
-    """Try CreateModel with the verified path forms. Reports every attempt."""
+    """Try CreateModel with the verified path forms. Reports every attempt.
+
+    SFM's SWIG wrapper validates argument count and raises
+    "Missing model file name." when the name is absent, so we probe the
+    accepted arity first (0..3) using strings only, then try paths.
+    """
     tries = []
     model = None
     used = None
-    for c in sfm_create_model_variants():
+    arity = None
+    for n in range(0, 4):
         try:
-            m = sfm.CreateModel(c)
+            sfm.CreateModel(*(["models/player/scout.mdl"] * n))
+            arity = n
+            tries.append("arity %d accepted" % n)
+            break
+        except Exception as e:
+            tries.append("arity %d -> %s" % (n, str(e)[:90]))
+    if arity is None:
+        arity = 1
+    for c in sfm_create_model_variants():
+        args = ["models/player/scout.mdl"] * (arity - 1) + [c]
+        try:
+            m = sfm.CreateModel(*args)
         except Exception as e:
             tries.append("%s -> ERR %s" % (c, str(e)[:70]))
             continue
