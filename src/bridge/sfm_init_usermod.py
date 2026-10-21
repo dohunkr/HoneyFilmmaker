@@ -946,14 +946,91 @@ def gui_place_model(name, model_file, pos):
     return do_add_model(name, model_file, pos)
 
 
+def sfm_create_model_variants():
+    """Candidate model paths.
+
+    Verified from ifm.dll (SFM engine) strings:
+      - "MDL file contains no sequences"  -> a model only loads if it has
+        $sequence data, i.e. it must be accompanied by <name>_animations.mdl.
+      - "%s\\%s.mdl" with "contentdir:models" -> virtual path is
+        models/<file>.mdl, and the engine splits dir + file name.
+      - tf/models/player/hwm/*.mdl have NO *_animations.mdl sibling, so they
+        cannot be loaded as game models. tf/models/player/*.mdl DO have one.
+    """
+    base = "models/player/"
+    names = ["scout", "soldier", "spy", "medic", "heavy", "demo",
+             "engineer", "pyro", "sniper"]
+    out = []
+    for n in names:
+        out.append(base + n + ".mdl")
+        out.append("tf/" + base + n + ".mdl")
+    for n in ["bot_soldier", "bot_soldier_boss"]:
+        out.append("models/bots/soldier/" + n + ".mdl")
+        out.append("models/bots/soldier_boss/" + n + ".mdl")
+    out.append("models/props_2fort/oildrum.mdl")
+    out.append("models/player/hwm/scout.mdl")
+    return out
+
+
+def sfm_try_create_models():
+    """Try CreateModel with the verified path forms. Reports every attempt."""
+    tries = []
+    model = None
+    used = None
+    for c in sfm_create_model_variants():
+        try:
+            m = sfm.CreateModel(c)
+        except Exception as e:
+            tries.append("%s -> ERR %s" % (c, str(e)[:70]))
+            continue
+        tries.append("%s -> %s" % (c, "OK" if m is not None else "None"))
+        if m is not None:
+            model = m
+            used = c
+            break
+    return model, used, tries
+
+
 def do_add_model(name, model_file, pos):
-    """Full GUI-driven model creation."""
+    """Try CreateModel first (fast path). If that fails, drive the GUI."""
     base = os.path.basename(str(model_file)).lower()
     if base.endswith(".mdl"):
         base = base[:-4]
     diag = {"name": name, "model_file": model_file, "base": base}
     before = current_animset_names()
     diag["animsets_before"] = before
+    shot, how = find_shot()
+    diag["shot_source"] = how
+    if shot is None:
+        diag["error"] = "no shot"
+        return diag
+    # --- fast path: CreateModel with verified path forms ---
+    model, used, tries = sfm_try_create_models()
+    diag["create_model_tries"] = tries
+    if model is not None:
+        animset = None
+        try:
+            animset = sfm.CreateAnimationSet(str(name), target=model)
+        except Exception as e:
+            diag["error"] = "CreateAnimationSet: %s" % e
+            return diag
+        try:
+            dag = vs.CreateElement("DmeDag", str(name), shot.GetFileId())
+            dag.AddChild(model)
+            shot.scene.AddChild(dag)
+        except Exception as e:
+            diag["error"] = "dag attach: %s" % e
+            return diag
+        diag["ok"] = True
+        diag["path"] = used
+        diag.update(rename_and_move(animset, dag, name, pos))
+        try:
+            sfmApp.SaveDocument()
+            diag["saved"] = True
+        except Exception as e:
+            diag["save_error"] = str(e)[:120]
+        return diag
+    # --- fallback: GUI flow ---
     dlg = open_new_model_dialog(base)
     if dlg is None:
         diag["error"] = "could not open the model file dialog"
