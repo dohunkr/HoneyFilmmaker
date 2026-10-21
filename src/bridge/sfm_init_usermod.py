@@ -173,6 +173,74 @@ def find_shot(name=None):
     return shots[0], "GetShots[0]"
 
 
+def sfm_scan_dags():
+    """List every dag node in the current shot.
+    Used to adopt manually placed models."""
+    out = []
+    shot, how = find_shot()
+    if shot is None:
+        return out
+    try:
+        scene = shot.scene
+    except Exception:
+        return out
+    try:
+        for child in scene.children:
+            try:
+                name = str(child.GetName())
+            except Exception:
+                name = "?"
+            entry = {"name": name, "type": str(child.GetTypeName())}
+            try:
+                entry["children"] = [str(c.GetName()) for c in child.GetChildren()]
+            except Exception:
+                pass
+            out.append(entry)
+    except Exception:
+        pass
+    return out
+
+
+def sfm_adopt_models(mapping, positions=None):
+    """Adopt existing dag nodes by name and move them to target positions.
+    mapping: {"desired_name": "existing_dag_name"}"""
+    positions = positions or {}
+    shot, how = find_shot()
+    if shot is None:
+        return {"ok": False, "error": "no shot"}
+    result = {"ok": True, "shot": how, "adopted": []}
+    for name, target_name in mapping.items():
+        dag = None
+        for cand in (target_name, name):
+            try:
+                d = sfm.FindDag(cand)
+            except Exception:
+                d = None
+            if d is not None:
+                dag = d
+                break
+        if dag is None:
+            result["adopted"].append({"name": target_name, "ok": False,
+                                      "error": "not found"})
+            continue
+        entry = {"name": target_name, "ok": True}
+        try:
+            dag.SetName(str(target_name))
+        except Exception as e:
+            entry["rename_error"] = str(e)[:80]
+        pos = positions.get(target_name)
+        if pos is not None:
+            try:
+                sfm.SelectDag(dag)
+                sfm.Move(float(pos[0]), float(pos[1]), float(pos[2]))
+                entry["moved"] = list(pos)
+            except Exception as e:
+                entry["ok"] = False
+                entry["move_error"] = str(e)[:100]
+        result["adopted"].append(entry)
+    return result
+
+
 def place_model(name, model_path, pos=None, shot_name=None):
     # Model creation goes through the GUI placer: sfm.CreateModel() returns
     # None in every script context available to us.
@@ -497,7 +565,21 @@ def handle(cmd):
         if name == "save":
             return save_session()
         if name == "trigger_script":
-            r = trigger_scripts_menu(params.get("target", "honey_place_models"))
+            r = trigger_scripts_menu(params.get("target", "honey_gui_v1"))
+            r["id"] = cmd.get("id")
+            return r
+        if name == "scan_dags":
+            dags = sfm_scan_dags()
+            r = {"id": cmd.get("id"), "ok": True, "dags": dags, "count": len(dags)}
+            try:
+                with open(os.path.join(QUEUE, "dags.json"), "w") as f:
+                    json.dump(dags, f, indent=2)
+            except Exception:
+                pass
+            return r
+        if name == "adopt_models":
+            r = sfm_adopt_models(params.get("mapping", {}),
+                                  params.get("positions"))
             r["id"] = cmd.get("id")
             return r
     if name == "create_scene":
