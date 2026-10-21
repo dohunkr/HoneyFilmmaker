@@ -439,6 +439,11 @@ def find_new_animset(before):
     return None, shot
 
 
+def gui_place_model(name, model_file, pos):
+    """Entry point used by the bridge: create one model through the GUI."""
+    return place_one(name, model_file, pos)
+
+
 def place_one(name, model_file, pos):
     want = os.path.basename(str(model_file)).lower()
     if want.endswith(".mdl"):

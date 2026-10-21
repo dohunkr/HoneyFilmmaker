@@ -51,6 +51,11 @@ SESSION = os.path.join(QUEUE, "last_session.json")
 DIAG = os.path.join(QUEUE, "diagnose.json")
 AUTOSAVE_DIR = os.path.join(WORKDIR, "autosaves")
 
+# Session to reopen on startup, so the pipeline always has a shot.
+LAST_SESSION = os.path.join(
+    "D:\\SteamLibrary\\steamapps\\common\\SourceFilmmaker\\game",
+    "usermod", "elements", "sessions", "1000 years1.dmx")
+
 # Tracks whether a document is open, so we can re-diagnose when it changes.
 _last_doc_state = None
 
@@ -243,7 +248,7 @@ def sfm_adopt_models(mapping, positions=None):
 
 def place_model(name, model_path, pos=None, shot_name=None):
     # Model creation goes through the GUI placer: sfm.CreateModel() returns
-    # None in every script context available to us.
+    # None in every script context available to us (verified via ifm.dll).
     return gui_place_model(name, model_path, pos)
 
 
@@ -681,7 +686,7 @@ def _autosave_once():
 # so the GUI-driven placement runs from the startup script itself.
 def log(m):
     try:
-        print "[honey/gui] %s" % m
+        print "[honey/gui2] %s" % m
     except Exception:
         pass
 
@@ -701,8 +706,7 @@ def atomic_write(path, data):
         pass
 
 
-def pump(ms=250):
-    """Let SFM process events so the UI can react."""
+def pump(ms=300):
     end = time.time() + ms / 1000.0
     while time.time() < end:
         try:
@@ -724,90 +728,264 @@ def top_widgets():
         return []
 
 
-def find_dock(title_part):
-    for w in top_widgets():
+def widget_inventory():
+    """Full inventory of every visible widget that could be the add button."""
+    inv = []
+    try:
+        app = QtGui.QApplication.instance()
+    except Exception:
+        return inv
+    for w in app.topLevelWidgets():
         try:
-            t = str(w.windowTitle())
+            wtitle = str(w.windowTitle())
+            wclass = w.metaObject().className()
         except Exception:
             continue
-        if title_part.lower() in t.lower():
-            return w
+        try:
+            children = w.findChildren(QtGui.QWidget)
+        except Exception:
+            children = []
+        for c in children:
+            try:
+                cn = c.metaObject().className()
+                if cn not in ("QToolButton", "QPushButton", "QTabWidget",
+                              "QTabBar", "QStackedWidget", "QDockWidget",
+                              "QListView", "QTreeView"):
+                    continue
+                info = {"win": wtitle, "winclass": wclass, "class": cn,
+                        "text": str(c.text()),
+                        "tip": str(c.toolTip()),
+                        "name": str(c.objectName()),
+                        "vis": bool(c.isVisible()),
+                        "x": c.x(), "y": c.y(),
+                        "w": c.width(), "h": c.height()}
+                if cn == "QTabBar":
+                    try:
+                        info["tabs"] = [str(c.tabText(i))
+                                        for i in range(c.count())]
+                    except Exception:
+                        pass
+                inv.append(info)
+            except Exception:
+                continue
+    return inv
+
+
+def dump_widgets():
+    inv = widget_inventory()
+    atomic_write(BTN_DUMP, inv)
+    return inv
+
+
+def find_anim_set_tab():
+    """Return the widget of the Animation Set Editor tab."""
+    for w in top_widgets():
+        try:
+            for tb in w.findChildren(QtGui.QTabWidget):
+                for i in range(tb.count()):
+                    if "animation set" in str(tb.tabText(i)).lower():
+                        return tb.widget(i)
+        except Exception:
+            continue
+    for w in top_widgets():
+        try:
+            if "animation set" in str(w.windowTitle()).lower():
+                return w
+        except Exception:
+            continue
     return None
 
 
-def anim_set_editor_buttons():
-    """Buttons that belong to the Animation Set Editor dock.
-    Returns a list of (widget, info-dict) so the caller can pick the add
-    button reliably and so failures can be diagnosed from a file."""
-    out = []
+def find_add_button():
+    """The add button in the Animation Set Editor.
+    It is the top-left small square button of that panel."""
+    panel = find_anim_set_tab()
+    cands = []
+    if panel is not None:
+        try:
+            for cls in (QtGui.QToolButton, QtGui.QPushButton):
+                for b in panel.findChildren(cls):
+                    cands.append(b)
+        except Exception:
+            pass
+    if not cands:
+        # fall back: every tool button in the app that is small and top-left
+        try:
+            for w in top_widgets():
+                for b in w.findChildren(QtGui.QToolButton):
+                    cands.append(b)
+        except Exception:
+            pass
+    best = None
+    for b in cands:
+        try:
+            if not b.isVisible():
+                continue
+            g = b.geometry()
+            label = (str(b.text()) + " " + str(b.toolTip())
+                     + " " + str(b.objectName())).lower()
+            score = 100
+            if "add" in label or "new" in label or "create" in label or "+" in label:
+                score = 0
+            elif g.top() < 30 and g.left() < 30:
+                score = 1
+            elif g.top() < 30:
+                score = 2
+            if best is None or score < best[0]:
+                best = (score, b, label)
+        except Exception:
+            continue
+    return best
+
+
+def find_file_dialog():
     for w in top_widgets():
         try:
-            if not isinstance(w, QtGui.QDockWidget):
-                continue
-            title = str(w.windowTitle())
+            cn = w.metaObject().className()
+            if "FileDialog" in cn or "FileDialog" in str(type(w)):
+                if w.isVisible():
+                    return w
         except Exception:
             continue
-        if "animation set" not in title.lower():
-            continue
-        for cls in (QtGui.QToolButton, QtGui.QPushButton):
-            try:
-                btns = w.findChildren(cls)
-            except Exception:
-                continue
-            for b in btns:
-                info = {"class": str(b.metaObject().className()),
-                        "text": str(b.text()),
-                        "toolTip": str(b.toolTip()),
-                        "objectName": str(b.objectName()),
-                        "visible": bool(b.isVisible()),
-                        "x": b.x(), "y": b.y(),
-                        "w": b.width(), "h": b.height()}
-                out.append((b, info))
-    return out
+    return None
 
 
-def dump_buttons():
-    """Write the Animation Set Editor button inventory to a file."""
-    info = []
-    for _b, i in anim_set_editor_buttons():
-        info.append(i)
+def find_dialog_tree(dlg):
+    for cls in (QtGui.QTreeWidget, QtGui.QListWidget):
+        try:
+            items = dlg.findChildren(cls)
+            for it in items:
+                if it.isVisible():
+                    return it
+        except Exception:
+            pass
+    for cls in (QtGui.QTreeWidget, QtGui.QListWidget):
+        try:
+            items = dlg.findChildren(cls)
+            if items:
+                return items[0]
+        except Exception:
+            pass
+    return None
+
+
+def set_filter(dlg, text):
+    for le in dlg.findChildren(QtGui.QLineEdit):
+        try:
+            le.setText(text)
+            pump(300)
+            return True
+        except Exception:
+            pass
+    return False
+
+
+def tree_rows(tree):
+    rows = []
     try:
-        with open(os.path.join(QUEUE, "buttons.json"), "w") as f:
-            json.dump(info, f, indent=2)
+        it = QtGui.QTreeWidgetItemIterator(tree)
+        while it.value():
+            item = it.value()
+            try:
+                txt = str(item.text(0))
+            except Exception:
+                txt = ""
+            if not txt:
+                try:
+                    txt = str(item.text(1))
+                except Exception:
+                    txt = ""
+            parts = []
+            p = item
+            while p is not None:
+                try:
+                    tt = str(p.text(0))
+                except Exception:
+                    tt = ""
+                if tt:
+                    parts.insert(0, tt)
+                try:
+                    p = p.parent()
+                except Exception:
+                    p = None
+            rows.append((txt, "\\".join(parts), item))
+            it += 1
     except Exception:
         pass
-    return info
+    return rows
 
 
-def open_new_model_dialog(model_basename):
-    """Open the 'Create Animation Set for New Model' file dialog."""
-    buttons = anim_set_editor_buttons()
-    log("anim set editor buttons: %d" % len(buttons))
-    dump_buttons()
-    # Prefer a button that looks like "add" (plus icon, no text, top-left).
-    ordered = []
-    for b, i in buttons:
-        if not i.get("visible"):
+def pick_model(dlg, want):
+    tree = find_dialog_tree(dlg)
+    if tree is None:
+        return None, "no tree"
+    rows = tree_rows(tree)
+    for txt, rel, item in rows:
+        if txt.lower() != want.lower() + ".mdl":
             continue
-        label = (i["text"] + " " + i["toolTip"] + " " + i["objectName"]).lower()
-        score = 50
-        if "add" in label or "new" in label or "create" in label:
-            score = 0
-        elif i["text"].strip() == "" and i["y"] < 40:
-            score = 1
-        ordered.append((score, i["y"], i["x"], b))
-    ordered.sort(key=lambda t: (t[0], t[1], t[2]))
-    for score, _y, _x, b in ordered:
+        reln = rel.replace("\\", "/")
+        if reln.startswith("models/"):
+            reln = reln[7:]
+        for base in [GAME_TF_MODELS,
+                     GAME_TF_MODELS + "\\player\\hwm",
+                     GAME_TF_MODELS + "\\player"]:
+            cand = os.path.join(base, reln.replace("/", os.sep))
+            if os.path.isfile(cand):
+                try:
+                    tree.setCurrentItem(item)
+                except Exception:
+                    pass
+                try:
+                    item.setSelected(True)
+                except Exception:
+                    pass
+                pump(150)
+                return (item, cand, rel), None
+    for txt, rel, item in rows:
+        if txt.lower() == want.lower() + ".mdl":
+            try:
+                tree.setCurrentItem(item)
+                item.setSelected(True)
+            except Exception:
+                pass
+            pump(150)
+            return (item, rel, rel), None
+    return None, "%s not found (%d rows)" % (want, len(rows))
+
+
+def click_open(dlg):
+    for b in dlg.findChildren(QtGui.QPushButton):
         try:
-            b.click()
+            if str(b.text()).strip().lower() in ("open", "ok"):
+                b.click()
+                pump(500)
+                return True
         except Exception:
-            continue
-        pump(350)
-        dlg = find_file_dialog()
-        if dlg is not None:
-            log("dialog opened via button (score %d)" % score)
-            return dlg
-        # a popup menu may have appeared
+            pass
+    try:
+        dlg.accept()
+        pump(500)
+        return True
+    except Exception:
+        return False
+
+
+def open_picker(want):
+    """Open the MDL Picker via the Animation Set Editor add button."""
+    dump_widgets()
+    best = find_add_button()
+    if best is None:
+        return None, "no add button found"
+    score, b, label = best
+    log("add button: score=%d label=%r" % (score, label))
+    try:
+        b.click()
+    except Exception as e:
+        return None, "click failed: %s" % e
+    pump(500)
+    dlg = find_file_dialog()
+    if dlg is None:
+        # a menu may have opened
         menu = None
         for w in top_widgets():
             try:
@@ -821,182 +999,25 @@ def open_new_model_dialog(model_basename):
                 try:
                     if "new model" in str(act.text()).lower():
                         act.trigger()
-                        pump(500)
+                        pump(600)
                         dlg = find_file_dialog()
-                        if dlg is not None:
-                            log("dialog opened via menu action")
-                            return dlg
+                        break
                 except Exception:
                     pass
-            try:
-                menu.close()
-            except Exception:
-                pass
-    return None
-
-
-def find_file_dialog():
-    for w in top_widgets():
-        try:
-            cn = w.metaObject().className()
-        except Exception:
-            continue
-        if "FileDialog" in cn or "FileDialog" in str(type(w)):
-            return w
-    return None
-
-
-def dialog_tree(dlg):
-    for cls in (QtGui.QTreeWidget, QtGui.QListWidget, QtGui.QTreeView, QtGui.QListView):
-        try:
-            items = dlg.findChildren(cls)
-            if items:
-                return items[0]
-        except Exception:
-            pass
-    return None
-
-
-def set_filter(dlg, text):
-    """Set the file dialog's filter line edit."""
-    for le in dlg.findChildren(QtGui.QLineEdit):
-        try:
-            le.setText(text)
-            pump(200)
-            return True
-        except Exception:
-            pass
-    return False
-
-
-def tree_rows(tree):
-    """Return [(text, abs_rel_path)] for every row of a QTreeWidget."""
-    rows = []
-    try:
-        iterator = QtGui.QTreeWidgetItemIterator(tree)
-        while iterator.value():
-            item = iterator.value()
-            try:
-                txt = str(item.text(0))
-            except Exception:
-                txt = ""
-            if not txt:
+            if dlg is None:
                 try:
-                    txt = str(item.text(1))
+                    menu.close()
                 except Exception:
-                    txt = ""
-            # build the relative path from the ancestor chain
-            parts = []
-            it = item
-            while it is not None:
-                try:
-                    t = str(it.text(0))
-                except Exception:
-                    t = ""
-                if t:
-                    parts.insert(0, t)
-                try:
-                    it = it.parent()
-                except Exception:
-                    it = None
-            rel = "\\".join(parts)
-            rows.append((txt, rel, item))
-            iterator += 1
-    except Exception:
-        pass
-    return rows
+                    pass
+    if dlg is None:
+        return None, "no file dialog after click"
+    log("file dialog opened: %s" % dlg.metaObject().className())
+    set_filter(dlg, want)
+    pump(300)
+    return dlg, None
 
 
-def pick_model_in_dialog(dlg, want_basename):
-    """Select the row whose real file exists and matches the basename."""
-    tree = dialog_tree(dlg)
-    if tree is None:
-        return None, "no tree widget"
-    rows = tree_rows(tree)
-    best = None
-    for txt, rel, item in rows:
-        base = txt.lower()
-        if not base.endswith(".mdl"):
-            continue
-        stem = base[:-4]
-        if stem != want_basename.lower():
-            continue
-        # verify the real file exists under the tf models dir
-        rel_norm = rel.replace("\\", "/")
-        if rel_norm.startswith("models/"):
-            rel_norm = rel_norm[len("models/"):]
-        cand = os.path.join(GAME_TF_MODELS, rel_norm.replace("/", os.sep))
-        if os.path.isfile(cand):
-            best = (item, cand, rel)
-            break
-    if best is None:
-        # fall back to any row with the right file name
-        for txt, rel, item in rows:
-            if txt.lower() == want_basename.lower() + ".mdl":
-                best = (item, rel, rel)
-                break
-    if best is None:
-        return None, "model %s not in dialog (%d rows)" % (want_basename, len(rows))
-    item, path, rel = best
-    try:
-        tree.setCurrentItem(item)
-    except Exception:
-        pass
-    try:
-        item.setSelected(True)
-    except Exception:
-        pass
-    pump(150)
-    return (item, path, rel), None
-
-
-def click_open(dlg):
-    for b in dlg.findChildren(QtGui.QPushButton):
-        try:
-            if str(b.text()).strip().lower() in ("open", "ok"):
-                b.click()
-                pump(400)
-                return True
-        except Exception:
-            pass
-    try:
-        dlg.accept()
-        pump(400)
-        return True
-    except Exception as e:
-        return False
-
-
-def find_new_animset(before_names):
-    shot = None
-    try:
-        shot = sfm.GetCurrentShot()
-    except Exception:
-        shot = None
-    if shot is None:
-        try:
-            shot = sfmApp.GetShotAtCurrentTime()
-        except Exception:
-            shot = None
-    if shot is None:
-        return None, None
-    try:
-        sets = list(shot.animationSets)
-    except Exception:
-        sets = []
-    new = None
-    for a in sets:
-        try:
-            nm = str(a.GetName())
-        except Exception:
-            nm = ""
-        if nm not in before_names:
-            new = a
-            break
-    return shot, new
-
-
-def current_animset_names():
+def animset_names():
     names = []
     shot = None
     try:
@@ -1021,188 +1042,101 @@ def current_animset_names():
     return names
 
 
-def rename_and_move(animset, dag, name, pos):
-    out = {}
+def find_new_animset(before):
+    shot = None
     try:
-        dag.SetName(str(name))
-        out["dag_renamed"] = True
-    except Exception as e:
-        out["dag_rename_error"] = str(e)[:120]
-    try:
-        animset.SetName(str(name))
-        out["animset_renamed"] = True
+        shot = sfm.GetCurrentShot()
     except Exception:
+        shot = None
+    if shot is None:
         try:
-            animset.name.SetValue(str(name))
-            out["animset_renamed"] = True
-        except Exception as e:
-            out["animset_rename_error"] = str(e)[:120]
-    if pos is not None:
-        try:
-            sfm.SelectDag(dag)
-            sfm.Move(float(pos[0]), float(pos[1]), float(pos[2]))
-            out["moved"] = [float(pos[0]), float(pos[1]), float(pos[2])]
-        except Exception as e:
-            out["move_error"] = str(e)[:120]
-    return out
+            shot = sfmApp.GetShotAtCurrentTime()
+        except Exception:
+            shot = None
+    if shot is None:
+        return None, None
+    try:
+        for a in shot.animationSets:
+            try:
+                nm = str(a.GetName())
+            except Exception:
+                nm = ""
+            if nm not in before:
+                return a, shot
+    except Exception:
+        pass
+    return None, shot
 
 
 def gui_place_model(name, model_file, pos):
-    """GUI-driven model creation: Animation Set Editor [+] -> file dialog."""
-    return do_add_model(name, model_file, pos)
+    """Entry point used by the bridge: create one model through the GUI."""
+    return place_one(name, model_file, pos)
 
 
-def sfm_create_model_variants():
-    """Candidate model paths.
-
-    Verified from ifm.dll (SFM engine) strings:
-      - "MDL file contains no sequences"  -> a model only loads if it has
-        $sequence data, i.e. it must be accompanied by <name>_animations.mdl.
-      - "%s\\%s.mdl" with "contentdir:models" -> virtual path is
-        models/<file>.mdl, and the engine splits dir + file name.
-      - tf/models/player/hwm/*.mdl have NO *_animations.mdl sibling, so they
-        cannot be loaded as game models. tf/models/player/*.mdl DO have one.
-    """
-    base = "models/player/"
-    names = ["scout", "soldier", "spy", "medic", "heavy", "demo",
-             "engineer", "pyro", "sniper"]
-    out = []
-    for n in names:
-        out.append(base + n + ".mdl")
-        out.append("tf/" + base + n + ".mdl")
-    for n in ["bot_soldier", "bot_soldier_boss"]:
-        out.append("models/bots/soldier/" + n + ".mdl")
-        out.append("models/bots/soldier_boss/" + n + ".mdl")
-    out.append("models/props_2fort/oildrum.mdl")
-    out.append("models/player/hwm/scout.mdl")
-    return out
-
-
-def sfm_try_create_models():
-    """Try CreateModel with the verified path forms. Reports every attempt.
-
-    SFM's SWIG wrapper validates argument count and raises
-    "Missing model file name." when the name is absent, so we probe the
-    accepted arity first (0..3) using strings only, then try paths.
-    """
-    tries = []
-    model = None
-    used = None
-    arity = None
-    for n in range(0, 4):
-        try:
-            sfm.CreateModel(*(["models/player/scout.mdl"] * n))
-            arity = n
-            tries.append("arity %d accepted" % n)
-            break
-        except Exception as e:
-            tries.append("arity %d -> %s" % (n, str(e)[:90]))
-    if arity is None:
-        arity = 1
-    for c in sfm_create_model_variants():
-        args = ["models/player/scout.mdl"] * (arity - 1) + [c]
-        try:
-            m = sfm.CreateModel(*args)
-        except Exception as e:
-            tries.append("%s -> ERR %s" % (c, str(e)[:70]))
-            continue
-        tries.append("%s -> %s" % (c, "OK" if m is not None else "None"))
-        if m is not None:
-            model = m
-            used = c
-            break
-    return model, used, tries
-
-
-def do_add_model(name, model_file, pos):
-    """Try CreateModel first (fast path). If that fails, drive the GUI."""
-    base = os.path.basename(str(model_file)).lower()
-    if base.endswith(".mdl"):
-        base = base[:-4]
-    diag = {"name": name, "model_file": model_file, "base": base}
-    before = current_animset_names()
-    diag["animsets_before"] = before
-    shot, how = find_shot()
-    diag["shot_source"] = how
-    if shot is None:
-        diag["error"] = "no shot"
-        return diag
-    # --- fast path: CreateModel with verified path forms ---
-    model, used, tries = sfm_try_create_models()
-    diag["create_model_tries"] = tries
-    if model is not None:
-        animset = None
-        try:
-            animset = sfm.CreateAnimationSet(str(name), target=model)
-        except Exception as e:
-            diag["error"] = "CreateAnimationSet: %s" % e
-            return diag
-        try:
-            dag = vs.CreateElement("DmeDag", str(name), shot.GetFileId())
-            dag.AddChild(model)
-            shot.scene.AddChild(dag)
-        except Exception as e:
-            diag["error"] = "dag attach: %s" % e
-            return diag
-        diag["ok"] = True
-        diag["path"] = used
-        diag.update(rename_and_move(animset, dag, name, pos))
-        try:
-            sfmApp.SaveDocument()
-            diag["saved"] = True
-        except Exception as e:
-            diag["save_error"] = str(e)[:120]
-        return diag
-    # --- fallback: GUI flow ---
-    dlg = open_new_model_dialog(base)
+def place_one(name, model_file, pos):
+    want = os.path.basename(str(model_file)).lower()
+    if want.endswith(".mdl"):
+        want = want[:-4]
+    diag = {"name": name, "want": want}
+    before = animset_names()
+    diag["before"] = before
+    dlg, err = open_picker(want)
     if dlg is None:
-        diag["error"] = "could not open the model file dialog"
+        diag["error"] = "picker: %s" % err
         return diag
-    diag["dialog"] = str(dlg.metaObject().className())
-    set_filter(dlg, base)
-    pump(300)
-    picked, err = pick_model_in_dialog(dlg, base)
+    picked, perr = pick_model(dlg, want)
     if picked is None:
-        diag["error"] = err
+        diag["error"] = "pick: %s" % perr
         try:
             dlg.close()
         except Exception:
             pass
         return diag
     item, path, rel = picked
-    diag["picked_path"] = path
-    diag["picked_rel"] = rel
+    diag["picked"] = path
     click_open(dlg)
-    pump(1200)
-    shot, new = find_new_animset(before)
-    if new is None:
-        diag["error"] = "no new animation set appeared"
+    pump(1500)
+    aset, shot = find_new_animset(before)
+    if aset is None:
+        diag["error"] = "no new animation set"
         return diag
     try:
-        diag["animset_name"] = str(new.GetName())
+        diag["animset"] = str(aset.GetName())
     except Exception:
         pass
     dag = None
     try:
-        dags = new.GetDagNodes()
-    except Exception:
-        dags = None
-    if dags:
-        try:
+        dags = aset.GetDagNodes()
+        if dags:
             dag = dags[0]
-        except Exception:
-            dag = None
+    except Exception:
+        pass
     if dag is None:
         try:
-            d = sfm.FindDag(diag.get("animset_name", name))
-            if d is not None:
-                dag = d
+            dag = sfm.FindDag(diag.get("animset", name))
         except Exception:
             pass
     if dag is None:
-        diag["error"] = "could not resolve the dag node"
+        diag["error"] = "no dag node"
         return diag
-    diag.update(rename_and_move(new, dag, name, pos))
+    try:
+        dag.SetName(str(name))
+    except Exception as e:
+        diag["rename_error"] = str(e)[:100]
+    try:
+        aset.SetName(str(name))
+    except Exception:
+        try:
+            aset.name.SetValue(str(name))
+        except Exception:
+            pass
+    if pos is not None:
+        try:
+            sfm.SelectDag(dag)
+            sfm.Move(float(pos[0]), float(pos[1]), float(pos[2]))
+            diag["moved"] = [float(pos[0]), float(pos[1]), float(pos[2])]
+        except Exception as e:
+            diag["move_error"] = str(e)[:120]
     diag["ok"] = True
     try:
         sfmApp.SaveDocument()
@@ -1234,6 +1168,13 @@ def _start_workers():
             log("script menus rescanned")
         except Exception as e:
             log("rescan failed: %s" % e)
+        # Reopen the last session so the pipeline has a shot to work with.
+        try:
+            if not sfmApp.HasDocument():
+                r = sfmApp.OpenDocument(LAST_SESSION)
+                log("reopened session: %s" % r)
+        except Exception as e:
+            log("session reopen failed: %s" % e)
         try:
             diagnose()
         except Exception:
