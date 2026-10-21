@@ -100,12 +100,16 @@ def top_widgets():
 
 
 def widget_inventory():
-    """Full inventory of every visible widget that could be the add button."""
+    """Full inventory of every widget that could be the add button.
+    Includes tab bars so the Animation Set Editor panel can be located."""
     inv = []
     try:
         app = QtGui.QApplication.instance()
     except Exception:
         return inv
+    keep = ("QToolButton", "QPushButton", "QTabWidget", "QTabBar",
+            "QStackedWidget", "QDockWidget", "QListView", "QTreeView",
+            "QComboBox", "QLabel", "QSplitter", "QFrame")
     for w in app.topLevelWidgets():
         try:
             wtitle = str(w.windowTitle())
@@ -119,9 +123,7 @@ def widget_inventory():
         for c in children:
             try:
                 cn = c.metaObject().className()
-                if cn not in ("QToolButton", "QPushButton", "QTabWidget",
-                              "QTabBar", "QStackedWidget", "QDockWidget",
-                              "QListView", "QTreeView"):
+                if cn not in keep:
                     continue
                 info = {"win": wtitle, "winclass": wclass, "class": cn,
                         "text": str(c.text()),
@@ -131,6 +133,12 @@ def widget_inventory():
                         "x": c.x(), "y": c.y(),
                         "w": c.width(), "h": c.height()}
                 if cn == "QTabBar":
+                    try:
+                        info["tabs"] = [str(c.tabText(i))
+                                        for i in range(c.count())]
+                    except Exception:
+                        pass
+                if cn == "QTabWidget":
                     try:
                         info["tabs"] = [str(c.tabText(i))
                                         for i in range(c.count())]
@@ -148,45 +156,112 @@ def dump_widgets():
     return inv
 
 
-def find_anim_set_tab():
-    """Return the widget of the Animation Set Editor tab."""
-    for w in top_widgets():
-        try:
+def find_anim_set_panel():
+    """Return the widget that hosts the Animation Set Editor panel.
+    SFM uses a tab widget; the panel is one of its pages."""
+    app = None
+    try:
+        app = QtGui.QApplication.instance()
+    except Exception:
+        return None
+    tabs_found = []
+    try:
+        for w in app.topLevelWidgets():
             for tb in w.findChildren(QtGui.QTabWidget):
-                for i in range(tb.count()):
-                    if "animation set" in str(tb.tabText(i)).lower():
-                        return tb.widget(i)
-        except Exception:
-            continue
-    for w in top_widgets():
-        try:
-            if "animation set" in str(w.windowTitle()).lower():
-                return w
-        except Exception:
-            continue
+                try:
+                    names = [str(tb.tabText(i)) for i in range(tb.count())]
+                except Exception:
+                    continue
+                tabs_found.append((tb, names))
+                for i, n in enumerate(names):
+                    if "animation set" in n.lower():
+                        try:
+                            return tb.widget(i)
+                        except Exception:
+                            pass
+    except Exception:
+        pass
+    # tab bar (not a QTabWidget) can also hold the tabs
+    try:
+        for w in app.topLevelWidgets():
+            for tb in w.findChildren(QtGui.QTabBar):
+                try:
+                    names = [str(tb.tabText(i)) for i in range(tb.count())]
+                except Exception:
+                    continue
+                tabs_found.append((tb, names))
+                for i, n in enumerate(names):
+                    if "animation set" in n.lower():
+                        try:
+                            return tb.widget(i)
+                        except Exception:
+                            pass
+    except Exception:
+        pass
     return None
 
 
 def find_add_button():
-    """The add button in the Animation Set Editor.
-    It is the top-left small square button of that panel."""
-    panel = find_anim_set_tab()
+    """Locate the add button of the Animation Set Editor.
+
+    SFM's tab strip is a custom widget, so a tab lookup is not possible.
+    Instead the button is identified by its position: the Animation Set
+    Editor panel occupies the upper-left region of the main window, and its
+    add button is the first small square button at the top-left of that
+    region. Buttons are also matched by label when a tooltip exists.
+    """
+    main = None
+    for w in top_widgets():
+        try:
+            cn = w.metaObject().className()
+        except Exception:
+            continue
+        # CQSFMMainWindow is SFM's main window class
+        if "SFMMainWindow" in cn:
+            main = w
+            break
+    if main is None:
+        for w in top_widgets():
+            try:
+                if "filmmaker" in str(w.windowTitle()).lower():
+                    main = w
+                    break
+            except Exception:
+                continue
     cands = []
-    if panel is not None:
+    if main is not None:
         try:
             for cls in (QtGui.QToolButton, QtGui.QPushButton):
-                for b in panel.findChildren(cls):
+                for b in main.findChildren(cls):
                     cands.append(b)
         except Exception:
             pass
     if not cands:
-        # fall back: every tool button in the app that is small and top-left
         try:
             for w in top_widgets():
-                for b in w.findChildren(QtGui.QToolButton):
-                    cands.append(b)
+                for cls in (QtGui.QToolButton, QtGui.QPushButton):
+                    for b in w.findChildren(cls):
+                        cands.append(b)
         except Exception:
             pass
+    try:
+        listing = []
+        for b in cands:
+            try:
+                if not b.isVisible():
+                    continue
+                gp = b.mapTo(main) if main is not None else b.geometry()
+                listing.append({"class": str(b.metaObject().className()),
+                                "text": str(b.text()), "tip": str(b.toolTip()),
+                                "x": gp.x(), "y": gp.y(),
+                                "w": gp.width(), "h": gp.height()})
+            except Exception:
+                continue
+        atomic_write(os.path.join(QUEUE, "button_candidates.json"), listing)
+    except Exception:
+        pass
+    # The Animation Set Editor panel is on the left, below the toolbar.
+    # Its add button sits at the panel's top-left corner.
     best = None
     for b in cands:
         try:
@@ -195,13 +270,20 @@ def find_add_button():
             g = b.geometry()
             label = (str(b.text()) + " " + str(b.toolTip())
                      + " " + str(b.objectName())).lower()
-            score = 100
-            if "add" in label or "new" in label or "create" in label or "+" in label:
+            gp = b.mapTo(main) if main is not None else g
+            score = 1000
+            if "add" in label or "new" in label or "create" in label:
                 score = 0
-            elif g.top() < 30 and g.left() < 30:
-                score = 1
-            elif g.top() < 30:
-                score = 2
+            else:
+                col = 1 if gp.left() < 260 else 0
+                row = 1 if 100 < gp.top() < 280 else 0
+                size_ok = 1 if (gp.width() <= 40 and gp.height() <= 40) else 0
+                if col and row and size_ok:
+                    score = 1
+                elif col and row:
+                    score = 2
+                elif size_ok and gp.top() < 320:
+                    score = 3
             if best is None or score < best[0]:
                 best = (score, b, label)
         except Exception:
@@ -341,11 +423,73 @@ def click_open(dlg):
         return False
 
 
+def close_wizard_dialog():
+    """SFM shows a 'New Session' wizard on start. It blocks the main window
+    and its modal-ness prevents any editor interaction. Close it."""
+    closed = []
+    for w in top_widgets():
+        try:
+            cn = w.metaObject().className()
+        except Exception:
+            continue
+        if "Wizard" not in cn and "NewWizard" not in cn:
+            continue
+        try:
+            if not w.isVisible():
+                continue
+            # prefer a Cancel / Close button
+            done = False
+            for b in w.findChildren(QtGui.QPushButton):
+                try:
+                    t = str(b.text()).strip().lower()
+                    if t in ("cancel", "close", "skip", "later"):
+                        b.click()
+                        pump(400)
+                        done = True
+                        break
+                except Exception:
+                    pass
+            if not done:
+                try:
+                    w.close()
+                    pump(400)
+                    done = True
+                except Exception:
+                    pass
+            if done:
+                closed.append(cn)
+        except Exception:
+            continue
+    return closed
+
+
 def open_picker(want):
     """Open the MDL Picker via the Animation Set Editor add button."""
+    close_wizard_dialog()
     dump_widgets()
     best = find_add_button()
     if best is None:
+        # record every candidate so the failure is diagnosable from disk
+        try:
+            main = None
+            for w in top_widgets():
+                if "Source Filmmaker" in str(w.windowTitle()):
+                    main = w
+                    break
+            cands = []
+            if main is not None:
+                for cls in (QtGui.QToolButton, QtGui.QPushButton):
+                    for b in main.findChildren(cls):
+                        if not b.isVisible():
+                            continue
+                        gp = b.mapTo(main)
+                        cands.append({"class": str(b.metaObject().className()),
+                                       "text": str(b.text()), "tip": str(b.toolTip()),
+                                       "x": gp.x(), "y": gp.y(),
+                                       "w": gp.width(), "h": gp.height()})
+            atomic_write(os.path.join(QUEUE, "button_candidates.json"), cands)
+        except Exception:
+            pass
         return None, "no add button found"
     score, b, label = best
     log("add button: score=%d label=%r" % (score, label))

@@ -1,16 +1,36 @@
-# Install the HoneyFilmmaker bridge as SFM's usermod startup script.
-# This gives the script the real SFM context (the 'sfm' module is only fully
-# functional in SFM's own startup context, not in the Script Editor).
+# Install the HoneyFilmmaker bridge into every SFM script root.
+#
+# Verified from ifm.dll strings:
+#   "Couldn't load user initialization python script file '%s'"
+#       -> scripts\sfm\sfm_init_local.py
+#   "-sfm_startup_script"
+#       -> explicit startup script override
+#   "Couldn't load initialization python script file '%s'" + "PLATFORM"
+#       -> <PLATFORM>\scripts\sfm\sfm_init.py
+#
+# PLATFORM is the active game module, which is why installing into a single
+# root silently did nothing. Install everywhere.
 $ErrorActionPreference = "Stop"
 $Repo = Split-Path -Parent $MyInvocation.MyCommand.Path
-$Target = "D:\SteamLibrary\steamapps\common\SourceFilmmaker\game\usermod\scripts\sfm\sfm_init.py"
 $Source = Join-Path $Repo "src\bridge\sfm_init_usermod.py"
+$Game = "D:\SteamLibrary\steamapps\common\SourceFilmmaker\game"
 
-if (!(Test-Path $Source)) { Write-Host "source missing: $Source"; exit 1 }
-if (!(Test-Path (Split-Path -Parent $Target))) {
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Target) | Out-Null
+$roots = @()
+foreach ($m in @("platform", "usermod", "tf", "tf_movies", "hl2",
+                 "left4dead2_movies", "workshop")) {
+  $roots += (Join-Path $Game "$m\scripts\sfm")
 }
-Copy-Item -LiteralPath $Target -Destination "$Target.orig" -Force -ErrorAction SilentlyContinue
-Copy-Item -LiteralPath $Source -Destination $Target -Force
-Write-Host "installed -> $Target"
+
+foreach ($base in $roots) {
+  $init = Join-Path $base "sfm_init.py"
+  $d = Split-Path -Parent $init
+  if (!(Test-Path $d)) { continue }
+  Copy-Item -LiteralPath $init -Destination "$init.orig" -Force -ErrorAction SilentlyContinue
+  Copy-Item -LiteralPath $Source -Destination $init -Force
+  Write-Host "installed -> $init"
+  # also provide sfm_init_local.py (highest priority per the engine strings)
+  $local = Join-Path $base "sfm_init_local.py"
+  Copy-Item -LiteralPath $Source -Destination $local -Force
+  Write-Host "installed -> $local"
+}
 Write-Host "restart SFM to activate"
